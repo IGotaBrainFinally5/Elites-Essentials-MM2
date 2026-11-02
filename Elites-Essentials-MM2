@@ -1,198 +1,419 @@
+-- ============================================================
+-- Elites Essentials — MM2 Auto Farm (UI Diagnostic Build)
+-- repo:   IGotaBrainFinally5/Elites-Essentials-MM2
+-- file:   Elites-Essentials-MM2
+-- raw:    https://raw.githubusercontent.com/IGotaBrainFinally5/Elites-Essentials-MM2/refs/heads/main/Elites-Essentials-MM2
+-- load:   loadstring(game:HttpGet("https://raw.githubusercontent.com/IGotaBrainFinally5/Elites-Essentials-MM2/refs/heads/main/Elites-Essentials-MM2"))()
+-- target: Roblox mobile (Delta on iOS)
+-- UI only — no farming, no teleport, no reset in this build.
+-- ============================================================
+-- MM2 Auto Farm — UI Diagnostic (Delta on iOS)
 -- language: Luau (Roblox executor, client-side)
--- file: mm2_auto_farm.lua
--- target: Murder Mystery 2 (coin / candy collection)
--- UI toggle · teleport collection · auto-reset when nothing left
+-- file: mm2_ui_diag.lua
+-- target: Roblox mobile (Delta on iPhone)
+--
+-- Purpose: prove a ScreenGui can be created, parented, and
+--          rendered — and report exactly where it dies if not.
+-- No farming, no teleport, no reset. UI only.
+--
+-- After running, open the executor's console/log window. Every
+-- step is tagged [MM2-DIAG]. If the GUI still does not appear,
+-- the console output tells you which layer failed.
+-- ============================================================
 
-local Players = game:GetService("Players")
-local player  = Players.LocalPlayer
+local Players          = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
 
-local CONFIG = {
-    collectDelay   = 0.08,   -- seconds between teleports
-    scanInterval   = 0.5,    -- seconds between full scans
-    noCoinReset    = 10,     -- seconds with nothing collectible -> reset
-    verticalOffset = 3,      -- studs above the item
-    matchNames     = {"coin", "candy", "coinbag", "candybag"},
-}
+local TAG     = "[MM2-DIAG]"
+local diagLog = {}
 
-local enabled     = false
-local noCoinTimer = 0
-local farmThread  = nil
-
-------------------------------------------------------------------
--- UI
-------------------------------------------------------------------
-local gui = Instance.new("ScreenGui")
-gui.Name           = "MM2AutoFarm"
-gui.ResetOnSpawn   = false
-gui.IgnoreGuiInset = true
-gui.Parent         = player:WaitForChild("PlayerGui")
-
-local frame = Instance.new("Frame")
-frame.Size             = UDim2.new(0, 210, 0, 152)
-frame.Position         = UDim2.new(0, 20, 0, 80)
-frame.BackgroundColor3 = Color3.fromRGB(28, 28, 32)
-frame.BorderSizePixel  = 0
-frame.Active           = true
-frame.Draggable        = true
-frame.Parent           = gui
-
-local fc = Instance.new("UICorner")
-fc.CornerRadius = UDim.new(0, 10)
-fc.Parent = frame
-
-local title = Instance.new("TextLabel")
-title.Size                   = UDim2.new(1, 0, 0, 32)
-title.BackgroundTransparency = 1
-title.Text                   = "MM2 Auto Farm"
-title.TextColor3             = Color3.fromRGB(240, 240, 245)
-title.Font                   = Enum.Font.GothamBold
-title.TextSize               = 17
-title.Parent                 = frame
-
-local toggle = Instance.new("TextButton")
-toggle.Size             = UDim2.new(0.85, 0, 0, 42)
-toggle.Position         = UDim2.new(0.075, 0, 0, 40)
-toggle.BackgroundColor3 = Color3.fromRGB(190, 50, 50)
-toggle.Text             = "OFF"
-toggle.TextColor3       = Color3.fromRGB(255, 255, 255)
-toggle.Font             = Enum.Font.GothamBold
-toggle.TextSize         = 16
-toggle.Parent           = frame
-
-local tc = Instance.new("UICorner")
-tc.CornerRadius = UDim.new(0, 7)
-tc.Parent = toggle
-
-local status = Instance.new("TextLabel")
-status.Size             = UDim2.new(1, -10, 0, 24)
-status.Position         = UDim2.new(0, 5, 0, 92)
-status.BackgroundTransparency = 1
-status.Text             = "Idle"
-status.TextColor3       = Color3.fromRGB(170, 170, 180)
-status.Font             = Enum.Font.Gotham
-status.TextSize         = 12
-status.TextXAlignment   = Enum.TextXAlignment.Left
-status.Parent           = frame
-
-local resetBtn = Instance.new("TextButton")
-resetBtn.Size             = UDim2.new(0.85, 0, 0, 26)
-resetBtn.Position         = UDim2.new(0.075, 0, 0, 118)
-resetBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
-resetBtn.Text             = "Reset Character"
-resetBtn.TextColor3       = Color3.fromRGB(230, 230, 235)
-resetBtn.Font             = Enum.Font.Gotham
-resetBtn.TextSize         = 12
-resetBtn.Parent           = frame
-
-local rc = Instance.new("UICorner")
-rc.CornerRadius = UDim.new(0, 6)
-rc.Parent = resetBtn
-
-------------------------------------------------------------------
--- helpers
-------------------------------------------------------------------
-local function isCollectible(part)
-    if not part:IsA("BasePart") then return false end
-    if part:IsDescendantOf(player.Character or workspace) and part:IsDescendantOf(player.Character or workspace) then
-        -- skip anything parented under our own character
-        local char = player.Character
-        if char and part:IsDescendantOf(char) then return false end
-    end
-    local lower = part.Name:lower()
-    for _, needle in ipairs(CONFIG.matchNames) do
-        if lower:find(needle, 1, true) then return true end
-    end
-    return false
-end
-
-local function findCollectibles()
-    local list = {}
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        if isCollectible(obj) then
-            table.insert(list, obj)
-        end
-    end
-    return list
-end
-
-local function getHRP()
-    local char = player.Character
-    if not char then return nil end
-    return char:FindFirstChild("HumanoidRootPart")
-end
-
-local function resetCharacter()
-    local char = player.Character
-    if not char then return end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if hum then hum.Health = 0 end
-end
-
-------------------------------------------------------------------
--- farm loop
-------------------------------------------------------------------
-local function collectAll()
-    local hrp = getHRP()
-    if not hrp then return 0 end
-
-    local items = findCollectibles()
-    if #items == 0 then return 0 end
-
-    local count = 0
-    for _, item in ipairs(items) do
-        if not enabled then break end
-        if item and item.Parent and item:IsA("BasePart") then
-            hrp.CFrame = item.CFrame + Vector3.new(0, CONFIG.verticalOffset, 0)
-            count += 1
-            status.Text = string.format("collected %d  |  last: %s", count, item.Name)
-            task.wait(CONFIG.collectDelay)
-        end
-    end
-    return count
-end
-
-local function farmLoop()
-    noCoinTimer = 0
-    while enabled do
-        local got = collectAll()
-        if got > 0 then
-            noCoinTimer = 0
-        else
-            noCoinTimer += CONFIG.scanInterval
-            local left = math.max(0, CONFIG.noCoinReset - noCoinTimer)
-            status.Text = string.format("nothing collectible — reset in %.1fs", left)
-            if noCoinTimer >= CONFIG.noCoinReset then
-                status.Text = "resetting..."
-                resetCharacter()
-                noCoinTimer = 0
-                task.wait(2) -- give the game time to respawn / load next round
-            end
-        end
-        task.wait(CONFIG.scanInterval)
+local function log(level, msg)
+    table.insert(diagLog, string.format("[%s] %s", level, msg))
+    if level == "ERR" then
+        warn(TAG .. " " .. msg)
+    else
+        print(TAG .. " " .. msg)
     end
 end
 
-local function startFarm()
-    if enabled then return end
-    enabled = true
-    toggle.Text = "ON"
-    toggle.BackgroundColor3 = Color3.fromRGB(45, 190, 70)
-    status.Text = "running..."
-    farmThread = task.spawn(farmLoop)
+------------------------------------------------------------------
+-- 1. wait for the game to finish loading
+------------------------------------------------------------------
+if not game:IsLoaded() then
+    log("INFO", "game not loaded yet — waiting")
+    game.Loaded:Wait()
+    log("INFO", "game loaded")
+else
+    log("INFO", "game already loaded")
 end
 
-local function stopFarm()
-    enabled = false
-    toggle.Text = "OFF"
+------------------------------------------------------------------
+-- 2. wait for LocalPlayer (a common silent failure on join)
+------------------------------------------------------------------
+local player = Players.LocalPlayer
+if not player then
+    log("WARN", "Players.LocalPlayer is nil — waiting up to 10s")
+    local t0 = os.clock()
+    repeat task.wait(0.1) until Players.LocalPlayer or (os.clock() - t0) > 10
+    player = Players.LocalPlayer
+end
+if not player then
+    log("ERR", "FATAL: LocalPlayer still nil after 10s — executor context issue, cannot build UI")
+    return
+end
+log("INFO", "LocalPlayer = " .. player.Name)
+
+------------------------------------------------------------------
+-- 3. resolve PlayerGui (fallback to CoreGui only if needed)
+------------------------------------------------------------------
+local playerGui
+local pgOk, pgErr = pcall(function()
+    playerGui = player:WaitForChild("PlayerGui", 10)
+end)
+if not pgOk or not playerGui then
+    log("ERR", "PlayerGui unavailable: " .. tostring(pgErr))
+    local cgOk, cg = pcall(function() return game:GetService("CoreGui") end)
+    if cgOk and cg then
+        playerGui = cg
+        log("WARN", "falling back to CoreGui (game cannot clear this on respawn)")
+    else
+        log("ERR", "FATAL: neither PlayerGui nor CoreGui is reachable")
+        return
+    end
+end
+log("INFO", "GUI parent = " .. playerGui:GetFullName())
+
+------------------------------------------------------------------
+-- 4. nuke any previous instance of this diag
+------------------------------------------------------------------
+local existing = playerGui:FindFirstChild("MM2AutoFarmDiag")
+if existing then
+    existing:Destroy()
+    log("INFO", "destroyed previous diag instance")
+end
+
+------------------------------------------------------------------
+-- 5. build the GUI
+------------------------------------------------------------------
+local gui, frame, errorBanner
+local intentionalClose = false
+
+local buildOk, buildErr = pcall(function()
+
+    gui = Instance.new("ScreenGui")
+    gui.Name            = "MM2AutoFarmDiag"
+    gui.ResetOnSpawn    = false
+    gui.IgnoreGuiInset  = true
+    gui.ZIndexBehavior  = Enum.ZIndexBehavior.Sibling
+    gui.DisplayOrder    = 9999          -- above MM2's own GUIs
+    gui.Enabled         = true
+
+    frame = Instance.new("Frame")
+    frame.Name             = "Root"
+    frame.AnchorPoint      = Vector2.new(0.5, 0.5)
+    frame.Position         = UDim2.new(0.5, 0, 0.5, 0)   -- center: safe on any aspect
+    frame.Size             = UDim2.new(0.82, 0, 0.55, 0)
+    frame.BackgroundColor3 = Color3.fromRGB(26, 26, 30)
+    frame.BorderSizePixel  = 0
+    frame.Active           = true
+    frame.Parent           = gui
+
+    local sizeC = Instance.new("UISizeConstraint")
+    sizeC.MinSize = Vector2.new(260, 300)
+    sizeC.MaxSize = Vector2.new(440, 540)
+    sizeC.Parent  = frame
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 14)
+    corner.Parent       = frame
+
+    local pad = Instance.new("UIPadding")
+    pad.PaddingTop    = UDim.new(0, 14)
+    pad.PaddingBottom = UDim.new(0, 14)
+    pad.PaddingLeft   = UDim.new(0, 14)
+    pad.PaddingRight  = UDim.new(0, 14)
+    pad.Parent        = frame
+
+    local list = Instance.new("UIListLayout")
+    list.Padding             = UDim.new(0, 10)
+    list.SortOrder           = Enum.SortOrder.LayoutOrder
+    list.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    list.Parent              = frame
+
+    -- Title
+    local title = Instance.new("TextLabel")
+    title.Name               = "Title"
+    title.LayoutOrder        = 1
+    title.Size               = UDim2.new(1, 0, 0, 40)
+    title.BackgroundTransparency = 1
+    title.Text               = "MM2 Auto Farm"
+    title.TextColor3         = Color3.fromRGB(245, 245, 250)
+    title.Font               = Enum.Font.GothamBold
+    title.TextScaled         = true
+    title.Parent             = frame
+
+    local titleC = Instance.new("UITextSizeConstraint")
+    titleC.MaxTextSize = 22
+    titleC.MinTextSize = 14
+    titleC.Parent      = title
+
+    -- Status
+    local status = Instance.new("TextLabel")
+    status.Name               = "Status"
+    status.LayoutOrder        = 2
+    status.Size               = UDim2.new(1, 0, 0, 26)
+    status.BackgroundTransparency = 1
+    status.Text               = "UI Loaded Successfully"
+    status.TextColor3         = Color3.fromRGB(120, 220, 140)
+    status.Font               = Enum.Font.Gotham
+    status.TextSize           = 14
+    status.TextWrapped        = true
+    status.Parent             = frame
+
+    -- Toggle (56px height — meets iOS touch target minimum)
+    local toggle = Instance.new("TextButton")
+    toggle.Name             = "Toggle"
+    toggle.LayoutOrder      = 3
+    toggle.Size             = UDim2.new(1, 0, 0, 56)
     toggle.BackgroundColor3 = Color3.fromRGB(190, 50, 50)
-    status.Text = "idle"
-end
+    toggle.Text             = "OFF"
+    toggle.TextColor3       = Color3.fromRGB(255, 255, 255)
+    toggle.Font             = Enum.Font.GothamBold
+    toggle.TextScaled       = true
+    toggle.AutoButtonColor  = true
+    toggle.Parent           = frame
 
-toggle.MouseButton1Click:Connect(function()
-    if enabled then stopFarm() else startFarm() end
+    local toggleC = Instance.new("UITextSizeConstraint")
+    toggleC.MaxTextSize = 20
+    toggleC.MinTextSize = 12
+    toggleC.Parent      = toggle
+
+    local toggleCorner = Instance.new("UICorner")
+    toggleCorner.CornerRadius = UDim.new(0, 10)
+    toggleCorner.Parent       = toggle
+
+    -- Print diagnostics
+    local printBtn = Instance.new("TextButton")
+    printBtn.Name             = "PrintDiag"
+    printBtn.LayoutOrder      = 4
+    printBtn.Size             = UDim2.new(1, 0, 0, 48)
+    printBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 75)
+    printBtn.Text             = "Print Diagnostics"
+    printBtn.TextColor3       = Color3.fromRGB(230, 230, 240)
+    printBtn.Font             = Enum.Font.Gotham
+    printBtn.TextScaled       = true
+    printBtn.Parent           = frame
+
+    local printC = Instance.new("UITextSizeConstraint")
+    printC.MaxTextSize = 16
+    printC.MinTextSize = 11
+    printC.Parent      = printBtn
+
+    local printCorner = Instance.new("UICorner")
+    printCorner.CornerRadius = UDim.new(0, 10)
+    printCorner.Parent       = printBtn
+
+    -- Close
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Name             = "Close"
+    closeBtn.LayoutOrder      = 5
+    closeBtn.Size             = UDim2.new(1, 0, 0, 48)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 95)
+    closeBtn.Text             = "Close"
+    closeBtn.TextColor3       = Color3.fromRGB(255, 255, 255)
+    closeBtn.Font             = Enum.Font.Gotham
+    closeBtn.TextScaled       = true
+    closeBtn.Parent           = frame
+
+    local closeC = Instance.new("UITextSizeConstraint")
+    closeC.MaxTextSize = 16
+    closeC.MinTextSize = 11
+    closeC.Parent      = closeBtn
+
+    local closeCorner = Instance.new("UICorner")
+    closeCorner.CornerRadius = UDim.new(0, 10)
+    closeCorner.Parent       = closeBtn
+
+    -- Error banner (hidden unless a problem is detected)
+    errorBanner = Instance.new("TextLabel")
+    errorBanner.Name                 = "ErrorBanner"
+    errorBanner.LayoutOrder          = 6
+    errorBanner.Size                 = UDim2.new(1, 0, 0, 0)
+    errorBanner.AutomaticSize        = Enum.AutomaticSize.Y
+    errorBanner.BackgroundColor3     = Color3.fromRGB(90, 20, 20)
+    errorBanner.BackgroundTransparency = 0
+    errorBanner.TextColor3           = Color3.fromRGB(255, 200, 200)
+    errorBanner.Font                 = Enum.Font.Gotham
+    errorBanner.TextSize             = 12
+    errorBanner.TextWrapped          = true
+    errorBanner.Visible              = false
+    errorBanner.Parent               = frame
+
+    local errPad = Instance.new("UIPadding")
+    errPad.PaddingTop    = UDim.new(0, 6)
+    errPad.PaddingBottom = UDim.new(0, 6)
+    errPad.PaddingLeft   = UDim.new(0, 8)
+    errPad.PaddingRight  = UDim.new(0, 8)
+    errPad.Parent        = errorBanner
+
+    -- ---- touch drag (Draggable is deprecated & broken on mobile) ----
+    local dragging   = false
+    local dragStart, startPos
+
+    frame.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch
+        or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging  = true
+            dragStart = input.Position
+            startPos  = frame.Position
+        end
+    end)
+
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch
+        or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType == Enum.UserInputType.Touch
+        or input.UserInputType == Enum.UserInputType.MouseMovement then
+            local delta = input.Position - dragStart
+            frame.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+
+    -- ---- toggle (visual only in this diagnostic) ----
+    local isOn = false
+    toggle.MouseButton1Click:Connect(function()
+        isOn = not isOn
+        toggle.Text = isOn and "ON" or "OFF"
+        toggle.BackgroundColor3 = isOn
+            and Color3.fromRGB(45, 190, 70)
+            or  Color3.fromRGB(190, 50, 50)
+    end)
+
+    -- ---- print diagnostics ----
+    printBtn.MouseButton1Click:Connect(function()
+        print("===== MM2-DIAG REPORT =====")
+        for _, line in ipairs(diagLog) do
+            print(line)
+        end
+        print("gui.Parent        =", gui.Parent and gui.Parent:GetFullName() or "nil")
+        print("gui.Enabled       =", gui.Enabled)
+        print("gui.AbsoluteSize  =", tostring(gui.AbsoluteSize))
+        print("frame.AbsoluteSize=", tostring(frame.AbsoluteSize))
+        print("frame.Position    =", tostring(frame.Position))
+        print("frame.Visible     =", frame.Visible)
+        print("DisplayOrder      =", gui.DisplayOrder)
+        print("ViewportSize      =",
+            workspace.CurrentCamera and tostring(workspace.CurrentCamera.ViewportSize) or "no camera")
+        print("===========================")
+    end)
+
+    -- ---- close ----
+    closeBtn.MouseButton1Click:Connect(function()
+        intentionalClose = true
+        log("INFO", "close pressed — destroying gui")
+        gui:Destroy()
+    end)
 end)
 
-resetBtn.MouseButton1Click:Connect(resetCharacter)
+if not buildOk then
+    log("ERR", "GUI build threw: " .. tostring(buildErr))
+    return
+end
+log("INFO", "GUI tree built in memory")
 
--- character swaps (death, respawn, new round) need no re-hook:
--- the loop reads player.Character fresh on every scan.
+------------------------------------------------------------------
+-- 6. parent it — with fallback if PlayerGui is protected
+------------------------------------------------------------------
+local parentOk, parentErr = pcall(function()
+    gui.Parent = playerGui
+end)
+
+if not parentOk then
+    log("ERR", "parent to PlayerGui failed: " .. tostring(parentErr))
+    local cgOk, cg = pcall(function() return game:GetService("CoreGui") end)
+    if cgOk and cg then
+        local fbOk, fbErr = pcall(function() gui.Parent = cg end)
+        if fbOk then
+            log("WARN", "fell back to CoreGui successfully")
+        else
+            log("ERR", "CoreGui fallback also failed: " .. tostring(fbErr))
+            return
+        end
+    else
+        log("ERR", "no fallback GUI parent available")
+        return
+    end
+else
+    log("INFO", "gui.Parent = " .. gui.Parent:GetFullName())
+end
+
+------------------------------------------------------------------
+-- 7. post-build verification (no assumptions)
+------------------------------------------------------------------
+task.wait(0.35)
+
+local problems = {}
+if not gui or not gui.Parent then
+    table.insert(problems, "ScreenGui has no parent")
+end
+if gui and not gui.Enabled then
+    table.insert(problems, "ScreenGui.Enabled is false")
+end
+if gui and (gui.AbsoluteSize.X <= 0 or gui.AbsoluteSize.Y <= 0) then
+    table.insert(problems, string.format(
+        "ScreenGui.AbsoluteSize = %s (should be > 0)", tostring(gui.AbsoluteSize)))
+end
+if frame and (frame.AbsoluteSize.X <= 0 or frame.AbsoluteSize.Y <= 0) then
+    table.insert(problems, string.format(
+        "Root frame.AbsoluteSize = %s (should be > 0)", tostring(frame.AbsoluteSize)))
+end
+
+if #problems > 0 then
+    for _, p in ipairs(problems) do
+        log("ERR", "verification: " .. p)
+    end
+    if errorBanner and errorBanner.Parent then
+        errorBanner.Visible = true
+        errorBanner.Text    = "UI has issues:\n" .. table.concat(problems, "\n")
+    end
+else
+    log("INFO", "verification passed: parented, enabled, non-zero size")
+end
+
+------------------------------------------------------------------
+-- 8. if the game rips our GUI out, catch it and re-parent
+------------------------------------------------------------------
+gui.AncestryChanged:Connect(function(_, newParent)
+    if intentionalClose then return end
+    if newParent ~= nil then return end
+    if gui.Parent ~= nil then return end   -- just a re-parent, not a destroy
+
+    log("WARN", "ScreenGui was unparented — likely the game cleared PlayerGui")
+
+    task.defer(function()
+        if gui.Parent ~= nil then return end
+        local ok, err = pcall(function()
+            gui.Parent = playerGui
+        end)
+        if ok then
+            log("INFO", "re-parented successfully")
+        else
+            log("ERR", "re-parent failed (likely destroyed): " .. tostring(err))
+            if errorBanner and errorBanner.Parent then
+                errorBanner.Visible = true
+                errorBanner.Text    = "Lost parent: " .. tostring(err)
+            end
+        end
+    end)
+end)
+
+log("INFO", "diagnostic loaded — tap 'Print Diagnostics' for the full report")
