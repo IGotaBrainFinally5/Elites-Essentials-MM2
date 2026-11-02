@@ -1,807 +1,198 @@
---[[
-================================================================================
-  ELITES ESSENTIALS MM2 - CLEAN REBUILD (SINGLE FILE)
-  Completely new project from scratch.
-  Nothing reused from any previous version.
-================================================================================
-
-HOW TO INSTALL IN ROBLOX STUDIO:
-
-1. ReplicatedStorage
-   • Create a Folder named: MM2CoinSystem
-   • Inside it create a RemoteEvent named: CollectCoin
-
-2. ServerScriptService
-   • Create a normal Script
-   • Copy the entire SERVER CODE section (marked clearly below) into it
-
-3. StarterPlayer → StarterPlayerScripts
-   • Create a LocalScript
-   • Copy the entire CLIENT CODE section into it
-
-4. Workspace
-   • Create several Parts
-   • Name them exactly: TestCoin
-   • Anchored = true, CanCollide = false (recommended)
-
-================================================================================
-  ====================== SERVER CODE - COPY THIS FIRST ======================
-================================================================================
-]]
-
--- ========== START OF SERVER CODE (paste into a Script in ServerScriptService) ==========
-
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Players = game:GetService("Players")
-local CollectionService = game:GetService("CollectionService")
-
-local systemFolder = ReplicatedStorage:WaitForChild("MM2CoinSystem")
-local collectRemote = systemFolder:WaitForChild("CollectCoin")
-
-local COIN_TAG = "TestCoin"
-local COIN_NAME = "TestCoin"
-local MAX_DISTANCE = 12 -- studs
-
-local function ensureLeaderstats(player)
-	local ls = player:FindFirstChild("leaderstats")
-	if not ls then
-		ls = Instance.new("Folder")
-		ls.Name = "leaderstats"
-		ls.Parent = player
-	end
-	local coins = ls:FindFirstChild("Coins")
-	if not coins then
-		coins = Instance.new("IntValue")
-		coins.Name = "Coins"
-		coins.Value = 0
-		coins.Parent = ls
-	end
-	return coins
-end
-
-local function isValidCoin(obj)
-	if not obj or not obj.Parent then return false end
-	if obj:IsA("BasePart") then
-		if obj.Name == COIN_NAME or CollectionService:HasTag(obj, COIN_TAG) then
-			return true
-		end
-	end
-	return false
-end
-
-collectRemote.OnServerEvent:Connect(function(player, coin)
-	if typeof(coin) ~= "Instance" then return end
-	if not isValidCoin(coin) then return end
-
-	local character = player.Character
-	if not character then return end
-	local hrp = character:FindFirstChild("HumanoidRootPart")
-	if not hrp then return end
-
-	local dist = (hrp.Position - coin.Position).Magnitude
-	if dist > MAX_DISTANCE then
-		warn("[MM2 Server] Rejected - too far:", player.Name, dist)
-		return
-	end
-
-	local coinsValue = ensureLeaderstats(player)
-	coinsValue.Value += 1
-	coin:Destroy()
-
-	print(string.format("[MM2 Server] %s collected coin. Total: %d", player.Name, coinsValue.Value))
-end)
-
--- Auto-tag existing and future TestCoins
-for _, obj in ipairs(workspace:GetDescendants()) do
-	if obj:IsA("BasePart") and obj.Name == COIN_NAME then
-		CollectionService:AddTag(obj, COIN_TAG)
-	end
-end
-
-workspace.DescendantAdded:Connect(function(obj)
-	if obj:IsA("BasePart") and obj.Name == COIN_NAME then
-		CollectionService:AddTag(obj, COIN_TAG)
-	end
-end)
-
-print("[MM2 Server] Ready")
-
--- ========== END OF SERVER CODE ==========
-
-
---[[
-================================================================================
-  ====================== CLIENT CODE - COPY THIS NEXT =======================
-================================================================================
-]]
-
--- ========== START OF CLIENT CODE (paste into a LocalScript in StarterPlayerScripts) ==========
+-- language: Luau (Roblox executor, client-side)
+-- file: mm2_auto_farm.lua
+-- target: Murder Mystery 2 (coin / candy collection)
+-- UI toggle · teleport collection · auto-reset when nothing left
 
 local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local CollectionService = game:GetService("CollectionService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local player  = Players.LocalPlayer
 
-local player = Players.LocalPlayer
-local playerGui = player:WaitForChild("PlayerGui")
-
-local systemFolder = ReplicatedStorage:WaitForChild("MM2CoinSystem")
-local collectRemote = systemFolder:WaitForChild("CollectCoin")
-
---// Configuration
-local Config = {
-	COIN_TAG = "TestCoin",
-	COIN_NAME = "TestCoin",
-	COLLECT_DISTANCE = 6,
-	MOVE_TIMEOUT = 8,
-	SEARCH_INTERVAL = 0.35,
-	DEFAULT_SPEED = 22,
-	UI = {
-		ToggleSize = 48,
-		MainWidth = 320,
-		MainHeight = 430,
-	}
+local CONFIG = {
+    collectDelay   = 0.08,   -- seconds between teleports
+    scanInterval   = 0.5,    -- seconds between full scans
+    noCoinReset    = 10,     -- seconds with nothing collectible -> reset
+    verticalOffset = 3,      -- studs above the item
+    matchNames     = {"coin", "candy", "coinbag", "candybag"},
 }
 
---// State
-local State = {
-	collecting = false,
-	paused = false,
-	coinsCollected = 0,
-	currentTarget = nil,
-	logs = {},
-	logEnabled = true,
-	connections = {},
-	character = nil,
-	humanoid = nil,
-	hrp = nil,
-}
+local enabled     = false
+local noCoinTimer = 0
+local farmThread  = nil
 
---// Colors
-local Colors = {
-	Background = Color3.fromRGB(18, 18, 22),
-	Accent = Color3.fromRGB(88, 101, 242),
-	Secondary = Color3.fromRGB(139, 92, 246),
-	Text = Color3.fromRGB(240, 240, 245),
-	ToggleBg = Color3.fromRGB(28, 28, 34),
-	Border = Color3.fromRGB(60, 60, 75),
-}
+------------------------------------------------------------------
+-- UI
+------------------------------------------------------------------
+local gui = Instance.new("ScreenGui")
+gui.Name           = "MM2AutoFarm"
+gui.ResetOnSpawn   = false
+gui.IgnoreGuiInset = true
+gui.Parent         = player:WaitForChild("PlayerGui")
 
---// Logging
-local function log(msg, level)
-	level = level or "INFO"
-	if not State.logEnabled and level ~= "ERROR" then return end
-	local timestamp = os.date("%H:%M:%S")
-	local entry = string.format("[%s] [%s] %s", timestamp, level, tostring(msg))
-	table.insert(State.logs, entry)
-	if #State.logs > 200 then
-		table.remove(State.logs, 1)
-	end
-	if State.refreshLogs then
-		State.refreshLogs()
-	end
-	if level == "ERROR" or level == "WARN" then
-		warn(entry)
-	else
-		print(entry)
-	end
-end
+local frame = Instance.new("Frame")
+frame.Size             = UDim2.new(0, 210, 0, 152)
+frame.Position         = UDim2.new(0, 20, 0, 80)
+frame.BackgroundColor3 = Color3.fromRGB(28, 28, 32)
+frame.BorderSizePixel  = 0
+frame.Active           = true
+frame.Draggable        = true
+frame.Parent           = gui
 
---// Helpers
-local function isValidCoin(obj)
-	if not obj or not obj.Parent then return false end
-	if not obj:IsA("BasePart") then return false end
-	return obj.Name == Config.COIN_NAME or CollectionService:HasTag(obj, Config.COIN_TAG)
-end
+local fc = Instance.new("UICorner")
+fc.CornerRadius = UDim.new(0, 10)
+fc.Parent = frame
 
-local function findNearestCoin()
-	local coins = {}
-	for _, obj in ipairs(CollectionService:GetTagged(Config.COIN_TAG)) do
-		if isValidCoin(obj) then
-			table.insert(coins, obj)
-		end
-	end
-	for _, obj in ipairs(workspace:GetDescendants()) do
-		if isValidCoin(obj) and not table.find(coins, obj) then
-			table.insert(coins, obj)
-		end
-	end
-
-	if not State.hrp then return nil end
-
-	local nearest, nearestDist = nil, math.huge
-	for _, coin in ipairs(coins) do
-		local dist = (State.hrp.Position - coin.Position).Magnitude
-		if dist < nearestDist and coin ~= State.currentTarget then
-			nearest = coin
-			nearestDist = dist
-		end
-	end
-	return nearest, nearestDist
-end
-
-local function moveTo(position, timeout)
-	if not State.humanoid or not State.hrp then return false end
-	timeout = timeout or Config.MOVE_TIMEOUT
-
-	State.humanoid:MoveTo(position)
-	local start = tick()
-
-	while tick() - start < timeout do
-		if not State.collecting or State.paused then
-			State.humanoid:MoveTo(State.hrp.Position)
-			return false
-		end
-		if not State.hrp or not State.hrp.Parent then return false end
-
-		local dist = (State.hrp.Position - position).Magnitude
-		if dist <= Config.COLLECT_DISTANCE then
-			State.humanoid:MoveTo(State.hrp.Position)
-			return true
-		end
-
-		if (tick() - start) % 1.5 < 0.05 then
-			State.humanoid:MoveTo(position)
-		end
-		task.wait(0.1)
-	end
-
-	State.humanoid:MoveTo(State.hrp.Position)
-	return false
-end
-
-local function attemptCollect(coin)
-	if not isValidCoin(coin) then return false end
-	if not State.hrp then return false end
-
-	local dist = (State.hrp.Position - coin.Position).Magnitude
-	if dist > Config.COLLECT_DISTANCE + 2 then
-		log("Coin too far at collect time", "WARN")
-		return false
-	end
-
-	collectRemote:FireServer(coin)
-	log("Collection request sent")
-	State.coinsCollected += 1
-	return true
-end
-
-local function collectionLoop()
-	log("Collection loop started")
-	while State.collecting do
-		if State.paused then
-			task.wait(0.3)
-			continue
-		end
-
-		if not State.hrp or not State.hrp.Parent or not State.humanoid or State.humanoid.Health <= 0 then
-			log("Character invalid, waiting...", "WARN")
-			task.wait(1)
-			continue
-		end
-
-		local coin, dist = findNearestCoin()
-		State.currentTarget = coin
-
-		if not coin then
-			log("No coins found")
-			task.wait(Config.SEARCH_INTERVAL)
-			continue
-		end
-
-		log(string.format("Targeting coin (%.1f studs)", dist or 0))
-
-		local success = moveTo(coin.Position, Config.MOVE_TIMEOUT)
-		if not success then
-			log("Failed to reach coin", "WARN")
-			State.currentTarget = nil
-			task.wait(0.4)
-			continue
-		end
-
-		if isValidCoin(coin) then
-			attemptCollect(coin)
-		else
-			log("Coin disappeared", "WARN")
-		end
-
-		State.currentTarget = nil
-		task.wait(Config.SEARCH_INTERVAL)
-	end
-	log("Collection loop ended")
-	State.currentTarget = nil
-end
-
-local function onCharacterAdded(char)
-	State.character = char
-	State.humanoid = char:WaitForChild("Humanoid", 8)
-	State.hrp = char:WaitForChild("HumanoidRootPart", 8)
-
-	if State.humanoid then
-		State.connections.died = State.humanoid.Died:Connect(function()
-			log("Character died", "WARN")
-			State.currentTarget = nil
-		end)
-	end
-	log("Character ready")
-end
-
---// UI
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "MM2CoinCollector"
-screenGui.ResetOnSpawn = false
-screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-screenGui.Parent = playerGui
-
--- Floating Toggle
-local toggleBtn = Instance.new("TextButton")
-toggleBtn.Name = "Toggle"
-toggleBtn.Size = UDim2.fromOffset(Config.UI.ToggleSize, Config.UI.ToggleSize)
-toggleBtn.Position = UDim2.new(1, -70, 0.5, -24)
-toggleBtn.AnchorPoint = Vector2.new(0.5, 0.5)
-toggleBtn.BackgroundColor3 = Colors.ToggleBg
-toggleBtn.Text = "EE"
-toggleBtn.TextColor3 = Colors.Accent
-toggleBtn.TextSize = 18
-toggleBtn.Font = Enum.Font.GothamBold
-toggleBtn.AutoButtonColor = false
-toggleBtn.Parent = screenGui
-
-local toggleCorner = Instance.new("UICorner")
-toggleCorner.CornerRadius = UDim.new(1, 0)
-toggleCorner.Parent = toggleBtn
-
-local toggleStroke = Instance.new("UIStroke")
-toggleStroke.Color = Colors.Accent
-toggleStroke.Thickness = 2
-toggleStroke.Parent = toggleBtn
-
-local toggleShadow = Instance.new("ImageLabel")
-toggleShadow.BackgroundTransparency = 1
-toggleShadow.Image = "rbxassetid://131807052"
-toggleShadow.ImageColor3 = Color3.new(0, 0, 0)
-toggleShadow.ImageTransparency = 0.6
-toggleShadow.Size = UDim2.new(1, 12, 1, 12)
-toggleShadow.Position = UDim2.fromOffset(-6, -4)
-toggleShadow.ZIndex = -1
-toggleShadow.Parent = toggleBtn
-
--- Main Panel
-local main = Instance.new("Frame")
-main.Name = "Main"
-main.Size = UDim2.fromOffset(Config.UI.MainWidth, Config.UI.MainHeight)
-main.Position = UDim2.new(1, -Config.UI.MainWidth - 20, 0.5, -Config.UI.MainHeight / 2)
-main.BackgroundColor3 = Colors.Background
-main.BorderSizePixel = 0
-main.Visible = false
-main.Parent = screenGui
-
-local mainCorner = Instance.new("UICorner")
-mainCorner.CornerRadius = UDim.new(0, 12)
-mainCorner.Parent = main
-
-local mainStroke = Instance.new("UIStroke")
-mainStroke.Color = Colors.Border
-mainStroke.Thickness = 1.5
-mainStroke.Parent = main
-
--- Title
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -20, 0, 36)
-title.Position = UDim2.fromOffset(10, 8)
+title.Size                   = UDim2.new(1, 0, 0, 32)
 title.BackgroundTransparency = 1
-title.Text = "Coin Collector"
-title.TextColor3 = Colors.Text
-title.TextSize = 18
-title.Font = Enum.Font.GothamBold
-title.TextXAlignment = Enum.TextXAlignment.Left
-title.Parent = main
+title.Text                   = "MM2 Auto Farm"
+title.TextColor3             = Color3.fromRGB(240, 240, 245)
+title.Font                   = Enum.Font.GothamBold
+title.TextSize               = 17
+title.Parent                 = frame
 
--- Status labels
-local statusLabel = Instance.new("TextLabel")
-statusLabel.Size = UDim2.new(1, -20, 0, 20)
-statusLabel.Position = UDim2.fromOffset(10, 42)
-statusLabel.BackgroundTransparency = 1
-statusLabel.Text = "Status: Stopped"
-statusLabel.TextColor3 = Colors.Secondary
-statusLabel.TextSize = 13
-statusLabel.Font = Enum.Font.Gotham
-statusLabel.TextXAlignment = Enum.TextXAlignment.Left
-statusLabel.Parent = main
+local toggle = Instance.new("TextButton")
+toggle.Size             = UDim2.new(0.85, 0, 0, 42)
+toggle.Position         = UDim2.new(0.075, 0, 0, 40)
+toggle.BackgroundColor3 = Color3.fromRGB(190, 50, 50)
+toggle.Text             = "OFF"
+toggle.TextColor3       = Color3.fromRGB(255, 255, 255)
+toggle.Font             = Enum.Font.GothamBold
+toggle.TextSize         = 16
+toggle.Parent           = frame
 
-local collectedLabel = Instance.new("TextLabel")
-collectedLabel.Size = UDim2.new(1, -20, 0, 18)
-collectedLabel.Position = UDim2.fromOffset(10, 62)
-collectedLabel.BackgroundTransparency = 1
-collectedLabel.Text = "Collected: 0"
-collectedLabel.TextColor3 = Colors.Text
-collectedLabel.TextSize = 13
-collectedLabel.Font = Enum.Font.Gotham
-collectedLabel.TextXAlignment = Enum.TextXAlignment.Left
-collectedLabel.Parent = main
+local tc = Instance.new("UICorner")
+tc.CornerRadius = UDim.new(0, 7)
+tc.Parent = toggle
 
-local targetLabel = Instance.new("TextLabel")
-targetLabel.Size = UDim2.new(1, -20, 0, 18)
-targetLabel.Position = UDim2.fromOffset(10, 80)
-targetLabel.BackgroundTransparency = 1
-targetLabel.Text = "Target: None"
-targetLabel.TextColor3 = Colors.Text
-targetLabel.TextSize = 12
-targetLabel.Font = Enum.Font.Gotham
-targetLabel.TextXAlignment = Enum.TextXAlignment.Left
-targetLabel.Parent = main
+local status = Instance.new("TextLabel")
+status.Size             = UDim2.new(1, -10, 0, 24)
+status.Position         = UDim2.new(0, 5, 0, 92)
+status.BackgroundTransparency = 1
+status.Text             = "Idle"
+status.TextColor3       = Color3.fromRGB(170, 170, 180)
+status.Font             = Enum.Font.Gotham
+status.TextSize         = 12
+status.TextXAlignment   = Enum.TextXAlignment.Left
+status.Parent           = frame
 
--- Buttons
-local function createButton(text, y, color, widthScale)
-	local btn = Instance.new("TextButton")
-	btn.Size = UDim2.new(widthScale or 0.5, -14, 0, 32)
-	btn.Position = UDim2.fromOffset(10, y)
-	btn.BackgroundColor3 = color or Colors.Accent
-	btn.Text = text
-	btn.TextColor3 = Color3.new(1, 1, 1)
-	btn.TextSize = 13
-	btn.Font = Enum.Font.GothamBold
-	btn.AutoButtonColor = false
-	btn.Parent = main
-	local c = Instance.new("UICorner")
-	c.CornerRadius = UDim.new(0, 8)
-	c.Parent = btn
-	return btn
+local resetBtn = Instance.new("TextButton")
+resetBtn.Size             = UDim2.new(0.85, 0, 0, 26)
+resetBtn.Position         = UDim2.new(0.075, 0, 0, 118)
+resetBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+resetBtn.Text             = "Reset Character"
+resetBtn.TextColor3       = Color3.fromRGB(230, 230, 235)
+resetBtn.Font             = Enum.Font.Gotham
+resetBtn.TextSize         = 12
+resetBtn.Parent           = frame
+
+local rc = Instance.new("UICorner")
+rc.CornerRadius = UDim.new(0, 6)
+rc.Parent = resetBtn
+
+------------------------------------------------------------------
+-- helpers
+------------------------------------------------------------------
+local function isCollectible(part)
+    if not part:IsA("BasePart") then return false end
+    if part:IsDescendantOf(player.Character or workspace) and part:IsDescendantOf(player.Character or workspace) then
+        -- skip anything parented under our own character
+        local char = player.Character
+        if char and part:IsDescendantOf(char) then return false end
+    end
+    local lower = part.Name:lower()
+    for _, needle in ipairs(CONFIG.matchNames) do
+        if lower:find(needle, 1, true) then return true end
+    end
+    return false
 end
 
-local startBtn = createButton("Start", 110, Colors.Accent)
-local stopBtn = createButton("Stop", 110, Color3.fromRGB(180, 60, 60))
-stopBtn.Position = UDim2.new(0.5, 4, 0, 110)
-
-local pauseBtn = createButton("Pause", 148, Colors.Secondary, 1)
-pauseBtn.Size = UDim2.new(1, -20, 0, 30)
-
--- Settings
-local settingsHeader = Instance.new("TextLabel")
-settingsHeader.Size = UDim2.new(1, -20, 0, 20)
-settingsHeader.Position = UDim2.fromOffset(10, 190)
-settingsHeader.BackgroundTransparency = 1
-settingsHeader.Text = "Settings"
-settingsHeader.TextColor3 = Colors.Accent
-settingsHeader.TextSize = 14
-settingsHeader.Font = Enum.Font.GothamBold
-settingsHeader.TextXAlignment = Enum.TextXAlignment.Left
-settingsHeader.Parent = main
-
-local speedLabel = Instance.new("TextLabel")
-speedLabel.Size = UDim2.new(1, -20, 0, 16)
-speedLabel.Position = UDim2.fromOffset(10, 214)
-speedLabel.BackgroundTransparency = 1
-speedLabel.Text = "Speed: 22"
-speedLabel.TextColor3 = Colors.Text
-speedLabel.TextSize = 12
-speedLabel.Font = Enum.Font.Gotham
-speedLabel.TextXAlignment = Enum.TextXAlignment.Left
-speedLabel.Parent = main
-
-local speedBox = Instance.new("TextBox")
-speedBox.Size = UDim2.new(1, -20, 0, 24)
-speedBox.Position = UDim2.fromOffset(10, 232)
-speedBox.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
-speedBox.Text = "22"
-speedBox.TextColor3 = Colors.Text
-speedBox.TextSize = 13
-speedBox.Font = Enum.Font.Gotham
-speedBox.ClearTextOnFocus = false
-speedBox.Parent = main
-local sc = Instance.new("UICorner")
-sc.CornerRadius = UDim.new(0, 6)
-sc.Parent = speedBox
-
-local intervalLabel = Instance.new("TextLabel")
-intervalLabel.Size = UDim2.new(1, -20, 0, 16)
-intervalLabel.Position = UDim2.fromOffset(10, 264)
-intervalLabel.BackgroundTransparency = 1
-intervalLabel.Text = "Search Interval: 0.35s"
-intervalLabel.TextColor3 = Colors.Text
-intervalLabel.TextSize = 12
-intervalLabel.Font = Enum.Font.Gotham
-intervalLabel.TextXAlignment = Enum.TextXAlignment.Left
-intervalLabel.Parent = main
-
-local intervalBox = Instance.new("TextBox")
-intervalBox.Size = UDim2.new(1, -20, 0, 24)
-intervalBox.Position = UDim2.fromOffset(10, 282)
-intervalBox.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
-intervalBox.Text = "0.35"
-intervalBox.TextColor3 = Colors.Text
-intervalBox.TextSize = 13
-intervalBox.Font = Enum.Font.Gotham
-intervalBox.ClearTextOnFocus = false
-intervalBox.Parent = main
-local ic = Instance.new("UICorner")
-ic.CornerRadius = UDim.new(0, 6)
-ic.Parent = intervalBox
-
--- Colors
-local colorHeader = Instance.new("TextLabel")
-colorHeader.Size = UDim2.new(1, -20, 0, 18)
-colorHeader.Position = UDim2.fromOffset(10, 318)
-colorHeader.BackgroundTransparency = 1
-colorHeader.Text = "Colors (R,G,B)"
-colorHeader.TextColor3 = Colors.Accent
-colorHeader.TextSize = 13
-colorHeader.Font = Enum.Font.GothamBold
-colorHeader.TextXAlignment = Enum.TextXAlignment.Left
-colorHeader.Parent = main
-
-local function createColorRow(name, y, currentColor)
-	local lbl = Instance.new("TextLabel")
-	lbl.Size = UDim2.new(0.35, 0, 0, 20)
-	lbl.Position = UDim2.fromOffset(10, y)
-	lbl.BackgroundTransparency = 1
-	lbl.Text = name
-	lbl.TextColor3 = Colors.Text
-	lbl.TextSize = 11
-	lbl.Font = Enum.Font.Gotham
-	lbl.TextXAlignment = Enum.TextXAlignment.Left
-	lbl.Parent = main
-
-	local box = Instance.new("TextBox")
-	box.Size = UDim2.new(0.6, -10, 0, 20)
-	box.Position = UDim2.new(0.38, 0, 0, y)
-	box.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
-	box.Text = string.format("%d,%d,%d",
-		math.floor(currentColor.R * 255 + 0.5),
-		math.floor(currentColor.G * 255 + 0.5),
-		math.floor(currentColor.B * 255 + 0.5))
-	box.TextColor3 = Colors.Text
-	box.TextSize = 11
-	box.Font = Enum.Font.Code
-	box.ClearTextOnFocus = false
-	box.Parent = main
-	local bc = Instance.new("UICorner")
-	bc.CornerRadius = UDim.new(0, 4)
-	bc.Parent = box
-	return box
+local function findCollectibles()
+    local list = {}
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if isCollectible(obj) then
+            table.insert(list, obj)
+        end
+    end
+    return list
 end
 
-local bgBox = createColorRow("Background", 340, Colors.Background)
-local accentBox = createColorRow("Accent", 362, Colors.Accent)
-local textBoxC = createColorRow("Text", 384, Colors.Text)
-
--- Logs button
-local logsBtn = createButton("Logs", 0, Color3.fromRGB(50, 50, 60), 1)
-logsBtn.Size = UDim2.new(1, -20, 0, 26)
-logsBtn.Position = UDim2.fromOffset(10, Config.UI.MainHeight - 36)
-
--- Log Panel
-local logPanel = Instance.new("Frame")
-logPanel.Name = "LogPanel"
-logPanel.Size = UDim2.fromOffset(340, 280)
-logPanel.Position = UDim2.new(0.5, -170, 0.5, -140)
-logPanel.BackgroundColor3 = Colors.Background
-logPanel.Visible = false
-logPanel.Parent = screenGui
-
-local lpCorner = Instance.new("UICorner")
-lpCorner.CornerRadius = UDim.new(0, 10)
-lpCorner.Parent = logPanel
-
-local lpStroke = Instance.new("UIStroke")
-lpStroke.Color = Colors.Border
-lpStroke.Parent = logPanel
-
-local logTitle = Instance.new("TextLabel")
-logTitle.Size = UDim2.new(1, -20, 0, 28)
-logTitle.Position = UDim2.fromOffset(10, 6)
-logTitle.BackgroundTransparency = 1
-logTitle.Text = "Diagnostic Logs"
-logTitle.TextColor3 = Colors.Text
-logTitle.TextSize = 15
-logTitle.Font = Enum.Font.GothamBold
-logTitle.TextXAlignment = Enum.TextXAlignment.Left
-logTitle.Parent = logPanel
-
-local logScroll = Instance.new("ScrollingFrame")
-logScroll.Size = UDim2.new(1, -16, 1, -70)
-logScroll.Position = UDim2.fromOffset(8, 36)
-logScroll.BackgroundColor3 = Color3.fromRGB(12, 12, 16)
-logScroll.BorderSizePixel = 0
-logScroll.ScrollBarThickness = 4
-logScroll.CanvasSize = UDim2.fromOffset(0, 0)
-logScroll.Parent = logPanel
-
-local lsCorner = Instance.new("UICorner")
-lsCorner.CornerRadius = UDim.new(0, 6)
-lsCorner.Parent = logScroll
-
-local logText = Instance.new("TextLabel")
-logText.Size = UDim2.new(1, -8, 0, 0)
-logText.Position = UDim2.fromOffset(4, 4)
-logText.BackgroundTransparency = 1
-logText.Text = ""
-logText.TextColor3 = Color3.fromRGB(200, 200, 210)
-logText.TextSize = 11
-logText.Font = Enum.Font.Code
-logText.TextXAlignment = Enum.TextXAlignment.Left
-logText.TextYAlignment = Enum.TextYAlignment.Top
-logText.TextWrapped = true
-logText.Parent = logScroll
-
-local clearLogsBtn = Instance.new("TextButton")
-clearLogsBtn.Size = UDim2.new(0.45, -8, 0, 26)
-clearLogsBtn.Position = UDim2.new(0.05, 0, 1, -32)
-clearLogsBtn.BackgroundColor3 = Color3.fromRGB(140, 50, 50)
-clearLogsBtn.Text = "Clear"
-clearLogsBtn.TextColor3 = Color3.new(1, 1, 1)
-clearLogsBtn.TextSize = 12
-clearLogsBtn.Font = Enum.Font.GothamBold
-clearLogsBtn.Parent = logPanel
-local clc = Instance.new("UICorner")
-clc.CornerRadius = UDim.new(0, 6)
-clc.Parent = clearLogsBtn
-
-local closeLogsBtn = Instance.new("TextButton")
-closeLogsBtn.Size = UDim2.new(0.45, -8, 0, 26)
-closeLogsBtn.Position = UDim2.new(0.5, 4, 1, -32)
-closeLogsBtn.BackgroundColor3 = Colors.Accent
-closeLogsBtn.Text = "Close"
-closeLogsBtn.TextColor3 = Color3.new(1, 1, 1)
-closeLogsBtn.TextSize = 12
-closeLogsBtn.Font = Enum.Font.GothamBold
-closeLogsBtn.Parent = logPanel
-local cloc = Instance.new("UICorner")
-cloc.CornerRadius = UDim.new(0, 6)
-cloc.Parent = closeLogsBtn
-
---// Apply Colors
-local function applyColors()
-	main.BackgroundColor3 = Colors.Background
-	mainStroke.Color = Colors.Border
-	title.TextColor3 = Colors.Text
-	statusLabel.TextColor3 = Colors.Secondary
-	collectedLabel.TextColor3 = Colors.Text
-	targetLabel.TextColor3 = Colors.Text
-	toggleBtn.BackgroundColor3 = Colors.ToggleBg
-	toggleBtn.TextColor3 = Colors.Accent
-	toggleStroke.Color = Colors.Accent
-	startBtn.BackgroundColor3 = Colors.Accent
-	pauseBtn.BackgroundColor3 = Colors.Secondary
-	logPanel.BackgroundColor3 = Colors.Background
-	lpStroke.Color = Colors.Border
-	logTitle.TextColor3 = Colors.Text
+local function getHRP()
+    local char = player.Character
+    if not char then return nil end
+    return char:FindFirstChild("HumanoidRootPart")
 end
 
-local function parseColor(str)
-	local r, g, b = str:match("(%d+)%s*,%s*(%d+)%s*,%s*(%d+)")
-	if r and g and b then
-		return Color3.fromRGB(tonumber(r), tonumber(g), tonumber(b))
-	end
-	return nil
+local function resetCharacter()
+    local char = player.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then hum.Health = 0 end
 end
 
-local function updateStatus()
-	if State.collecting then
-		statusLabel.Text = State.paused and "Status: Paused" or "Status: Collecting"
-	else
-		statusLabel.Text = "Status: Stopped"
-	end
-	collectedLabel.Text = "Collected: " .. State.coinsCollected
-	if State.currentTarget and State.currentTarget.Parent then
-		targetLabel.Text = "Target: Active"
-	else
-		targetLabel.Text = "Target: None"
-	end
+------------------------------------------------------------------
+-- farm loop
+------------------------------------------------------------------
+local function collectAll()
+    local hrp = getHRP()
+    if not hrp then return 0 end
+
+    local items = findCollectibles()
+    if #items == 0 then return 0 end
+
+    local count = 0
+    for _, item in ipairs(items) do
+        if not enabled then break end
+        if item and item.Parent and item:IsA("BasePart") then
+            hrp.CFrame = item.CFrame + Vector3.new(0, CONFIG.verticalOffset, 0)
+            count += 1
+            status.Text = string.format("collected %d  |  last: %s", count, item.Name)
+            task.wait(CONFIG.collectDelay)
+        end
+    end
+    return count
 end
 
-State.refreshLogs = function()
-	local text = table.concat(State.logs, "\n")
-	logText.Text = text
-	logText.Size = UDim2.new(1, -8, 0, math.max(200, #State.logs * 14))
-	logScroll.CanvasSize = UDim2.fromOffset(0, logText.AbsoluteSize.Y + 10)
+local function farmLoop()
+    noCoinTimer = 0
+    while enabled do
+        local got = collectAll()
+        if got > 0 then
+            noCoinTimer = 0
+        else
+            noCoinTimer += CONFIG.scanInterval
+            local left = math.max(0, CONFIG.noCoinReset - noCoinTimer)
+            status.Text = string.format("nothing collectible — reset in %.1fs", left)
+            if noCoinTimer >= CONFIG.noCoinReset then
+                status.Text = "resetting..."
+                resetCharacter()
+                noCoinTimer = 0
+                task.wait(2) -- give the game time to respawn / load next round
+            end
+        end
+        task.wait(CONFIG.scanInterval)
+    end
 end
 
---// Events
-toggleBtn.MouseButton1Click:Connect(function()
-	main.Visible = not main.Visible
-end)
-
-startBtn.MouseButton1Click:Connect(function()
-	if State.collecting then return end
-	State.collecting = true
-	State.paused = false
-	updateStatus()
-	log("Collection started")
-	task.spawn(collectionLoop)
-end)
-
-stopBtn.MouseButton1Click:Connect(function()
-	State.collecting = false
-	State.paused = false
-	State.currentTarget = nil
-	if State.humanoid and State.hrp then
-		State.humanoid:MoveTo(State.hrp.Position)
-	end
-	updateStatus()
-	log("Collection stopped")
-end)
-
-pauseBtn.MouseButton1Click:Connect(function()
-	if not State.collecting then return end
-	State.paused = not State.paused
-	pauseBtn.Text = State.paused and "Resume" or "Pause"
-	updateStatus()
-	log(State.paused and "Paused" or "Resumed")
-end)
-
-speedBox.FocusLost:Connect(function()
-	local n = tonumber(speedBox.Text)
-	if n and n > 5 and n < 50 then
-		Config.DEFAULT_SPEED = n
-		if State.humanoid then
-			State.humanoid.WalkSpeed = n
-		end
-		speedLabel.Text = "Speed: " .. n
-		log("Speed set to " .. n)
-	else
-		speedBox.Text = tostring(Config.DEFAULT_SPEED)
-	end
-end)
-
-intervalBox.FocusLost:Connect(function()
-	local n = tonumber(intervalBox.Text)
-	if n and n >= 0.1 and n <= 3 then
-		Config.SEARCH_INTERVAL = n
-		intervalLabel.Text = "Search Interval: " .. n .. "s"
-		log("Interval set to " .. n)
-	else
-		intervalBox.Text = tostring(Config.SEARCH_INTERVAL)
-	end
-end)
-
-local function bindColorBox(box, key)
-	box.FocusLost:Connect(function()
-		local col = parseColor(box.Text)
-		if col then
-			Colors[key] = col
-			applyColors()
-			log("Color updated: " .. key)
-		end
-	end)
+local function startFarm()
+    if enabled then return end
+    enabled = true
+    toggle.Text = "ON"
+    toggle.BackgroundColor3 = Color3.fromRGB(45, 190, 70)
+    status.Text = "running..."
+    farmThread = task.spawn(farmLoop)
 end
-bindColorBox(bgBox, "Background")
-bindColorBox(accentBox, "Accent")
-bindColorBox(textBoxC, "Text")
 
-logsBtn.MouseButton1Click:Connect(function()
-	logPanel.Visible = true
-	State.refreshLogs()
-end)
-
-clearLogsBtn.MouseButton1Click:Connect(function()
-	table.clear(State.logs)
-	State.refreshLogs()
-	log("Logs cleared")
-end)
-
-closeLogsBtn.MouseButton1Click:Connect(function()
-	logPanel.Visible = false
-end)
-
---// Init
-applyColors()
-
-if player.Character then
-	onCharacterAdded(player.Character)
+local function stopFarm()
+    enabled = false
+    toggle.Text = "OFF"
+    toggle.BackgroundColor3 = Color3.fromRGB(190, 50, 50)
+    status.Text = "idle"
 end
-State.connections.charAdded = player.CharacterAdded:Connect(onCharacterAdded)
 
-State.connections.heartbeat = RunService.Heartbeat:Connect(function()
-	if State.collecting and not State.paused and State.humanoid then
-		if State.humanoid.WalkSpeed ~= Config.DEFAULT_SPEED then
-			State.humanoid.WalkSpeed = Config.DEFAULT_SPEED
-		end
-	end
-	updateStatus()
+toggle.MouseButton1Click:Connect(function()
+    if enabled then stopFarm() else startFarm() end
 end)
 
-log("MM2 Coin Collector initialized")
-print("[MM2 Client] Ready")
+resetBtn.MouseButton1Click:Connect(resetCharacter)
 
--- ========== END OF CLIENT CODE ==========
+-- character swaps (death, respawn, new round) need no re-hook:
+-- the loop reads player.Character fresh on every scan.
