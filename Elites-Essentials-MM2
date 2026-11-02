@@ -1,612 +1,814 @@
 -- ============================================================
--- Elites Essentials — MM2 Auto Farm
--- repo:   IGotaBrainFinally5/Elites-Essentials-MM2
--- file:   Elites-Essentials-MM2
--- raw:    https://raw.githubusercontent.com/IGotaBrainFinally5/Elites-Essentials-MM2/refs/heads/main/Elites-Essentials-MM2
--- load:   loadstring(game:HttpGet("https://raw.githubusercontent.com/IGotaBrainFinally5/Elites-Essentials-MM2/refs/heads/main/Elites-Essentials-MM2"))()
--- target: Roblox mobile (Delta on iOS)
--- ------------------------------------------------------------
--- Combined diagnostic + farm build.
--- - Robust ScreenGui that survives MM2's PlayerGui clears
--- - ON/OFF toggle arms the coin / candy collector
--- - Auto-collect: teleport to each coin, Touched picks it up
--- - Auto-reset when nothing left AND player is alive
--- - Print Diagnostics button for console report
+-- Elites Essentials MM2 — Complete Interface (Delta / iOS)
+-- language: Luau (client-side, no gameplay automation)
+-- target:   Roblox mobile
 -- ============================================================
 
 local Players          = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
+local TweenService     = game:GetService("TweenService")
 
-local TAG     = "[MM2-DIAG]"
-local diagLog = {}
-
-local function log(level, msg)
-    table.insert(diagLog, string.format("[%s] %s", level, msg))
-    if level == "ERR" then
-        warn(TAG .. " " .. msg)
-    else
-        print(TAG .. " " .. msg)
-    end
-end
-
-------------------------------------------------------------------
--- 0. config
-------------------------------------------------------------------
-local CONFIG = {
-    collectDelay   = 0.10,   -- seconds between teleports
-    scanInterval   = 1.50,   -- seconds between full scans
-    noCoinReset    = 15.0,   -- idle seconds before reset fires
-    autoReset      = true,   -- kill character when idle and alive
-    matchNames     = {
-        "coin", "cash", "candy", "treat", "sweet",
-        "coinbag", "candybag", "candypile",
+-- ============================================================
+-- PALETTE (theme-able)
+-- ============================================================
+local THEMES = {
+    Midnight = {
+        bg      = Color3.fromRGB(14, 14, 22),
+        panel   = Color3.fromRGB(22, 22, 34),
+        card    = Color3.fromRGB(30, 30, 46),
+        stroke  = Color3.fromRGB(60, 60, 100),
+        text    = Color3.fromRGB(235, 235, 250),
+        sub     = Color3.fromRGB(150, 150, 185),
+        accent  = Color3.fromRGB(90, 130, 255),
+        accent2 = Color3.fromRGB(160, 90, 255),
+        ok      = Color3.fromRGB(70, 200, 130),
+        bad     = Color3.fromRGB(210, 70, 100),
+        warn    = Color3.fromRGB(230, 180, 80),
+    },
+    Violet = {
+        bg      = Color3.fromRGB(20, 12, 30),
+        panel   = Color3.fromRGB(32, 20, 48),
+        card    = Color3.fromRGB(44, 28, 62),
+        stroke  = Color3.fromRGB(110, 70, 160),
+        text    = Color3.fromRGB(240, 230, 255),
+        sub     = Color3.fromRGB(180, 160, 210),
+        accent  = Color3.fromRGB(180, 110, 255),
+        accent2 = Color3.fromRGB(90, 130, 255),
+        ok      = Color3.fromRGB(120, 220, 160),
+        bad     = Color3.fromRGB(230, 90, 130),
+        warn    = Color3.fromRGB(240, 200, 100),
+    },
+    Ice = {
+        bg      = Color3.fromRGB(10, 18, 26),
+        panel   = Color3.fromRGB(18, 30, 42),
+        card    = Color3.fromRGB(26, 42, 58),
+        stroke  = Color3.fromRGB(60, 110, 150),
+        text    = Color3.fromRGB(230, 245, 255),
+        sub     = Color3.fromRGB(150, 185, 210),
+        accent  = Color3.fromRGB(90, 180, 255),
+        accent2 = Color3.fromRGB(120, 220, 230),
+        ok      = Color3.fromRGB(90, 220, 170),
+        bad     = Color3.fromRGB(220, 90, 120),
+        warn    = Color3.fromRGB(240, 200, 100),
     },
 }
 
-local state = {
-    enabled     = false,
-    noCoinTimer = 0,
-    farmThread  = nil,
+-- ============================================================
+-- STATE (session-scoped)
+-- ============================================================
+local State = {
+    themeName     = "Midnight",
+    theme         = THEMES.Midnight,
+    uiScale       = 1.0,
+    animations    = true,
+    farming       = false,
+    coinsCollected = 0,
+    bagMax        = 50,
+    autoReset     = true,
+    delay         = 0.15,
+    tab           = "Home",
 }
 
-------------------------------------------------------------------
--- 1. wait for the game to finish loading
-------------------------------------------------------------------
-if not game:IsLoaded() then
-    log("INFO", "game not loaded — waiting")
-    game.Loaded:Wait()
-    log("INFO", "game loaded")
-else
-    log("INFO", "game already loaded")
-end
-
-------------------------------------------------------------------
--- 2. wait for LocalPlayer
-------------------------------------------------------------------
+-- ============================================================
+-- PLAYER RESOLUTION
+-- ============================================================
 local player = Players.LocalPlayer
 if not player then
-    log("WARN", "LocalPlayer nil — waiting up to 10s")
     local t0 = os.clock()
-    repeat task.wait(0.1) until Players.LocalPlayer or (os.clock() - t0) > 10
+    while not Players.LocalPlayer and os.clock() - t0 < 15 do task.wait(0.1) end
     player = Players.LocalPlayer
 end
 if not player then
-    log("ERR", "FATAL: LocalPlayer still nil after 10s")
+    warn("[EE] LocalPlayer unavailable — re-execute after game loads.")
     return
 end
-log("INFO", "LocalPlayer = " .. player.Name)
 
-------------------------------------------------------------------
--- 3. resolve PlayerGui (CoreGui fallback)
-------------------------------------------------------------------
 local playerGui
-local pgOk, pgErr = pcall(function()
-    playerGui = player:WaitForChild("PlayerGui", 10)
-end)
-if not pgOk or not playerGui then
-    log("ERR", "PlayerGui unavailable: " .. tostring(pgErr))
-    local cgOk, cg = pcall(function() return game:GetService("CoreGui") end)
-    if cgOk and cg then
-        playerGui = cg
-        log("WARN", "falling back to CoreGui")
-    else
-        log("ERR", "FATAL: no GUI parent reachable")
-        return
+do
+    local t0 = os.clock()
+    while os.clock() - t0 < 15 do
+        playerGui = player:FindFirstChildOfClass("PlayerGui")
+        if playerGui then break end
+        task.wait(0.1)
     end
 end
-log("INFO", "GUI parent = " .. playerGui:GetFullName())
-
-------------------------------------------------------------------
--- 4. clear previous instance
-------------------------------------------------------------------
-local existing = playerGui:FindFirstChild("MM2AutoFarmDiag")
-if existing then
-    existing:Destroy()
-    log("INFO", "destroyed previous instance")
+if not playerGui then
+    local cg = game:GetService("CoreGui")
+    if not cg then warn("[EE] no GUI parent") return end
+    playerGui = cg
 end
 
-------------------------------------------------------------------
--- 5. build GUI
-------------------------------------------------------------------
-local gui, frame, errorBanner, toggleBtn, statusLabel, titleLabel
-local intentionalClose = false
+-- clean previous
+for _, host in ipairs({playerGui, game:GetService("CoreGui")}) do
+    local old = host:FindFirstChild("ElitesEssentials")
+    if old then old:Destroy() end
+end
 
-local buildOk, buildErr = pcall(function()
+-- ============================================================
+-- GUI ROOT
+-- ============================================================
+local gui = Instance.new("ScreenGui")
+gui.Name           = "ElitesEssentials"
+gui.ResetOnSpawn   = false
+gui.IgnoreGuiInset = true
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.DisplayOrder   = 2147483647
+gui.Enabled        = true
+gui.Parent         = playerGui
 
-    gui = Instance.new("ScreenGui")
-    gui.Name            = "MM2AutoFarmDiag"
-    gui.ResetOnSpawn    = false
-    gui.IgnoreGuiInset  = true
-    gui.ZIndexBehavior  = Enum.ZIndexBehavior.Sibling
-    gui.DisplayOrder    = 9999
-    gui.Enabled         = true
+-- ============================================================
+-- HELPERS
+-- ============================================================
+local function corner(inst, r)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, r or 10)
+    c.Parent = inst
+end
 
-    frame = Instance.new("Frame")
-    frame.Name             = "Root"
-    frame.AnchorPoint      = Vector2.new(0.5, 0.5)
-    frame.Position         = UDim2.new(0.5, 0, 0.5, 0)
-    frame.Size             = UDim2.new(0.82, 0, 0.55, 0)
-    frame.BackgroundColor3 = Color3.fromRGB(26, 26, 30)
-    frame.BorderSizePixel  = 0
-    frame.Active           = true
-    frame.Parent           = gui
+local function stroke(inst, color, thickness)
+    local s = Instance.new("UIStroke")
+    s.Color = color
+    s.Thickness = thickness or 1
+    s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    s.Parent = inst
+end
 
-    local sizeC = Instance.new("UISizeConstraint")
-    sizeC.MinSize = Vector2.new(260, 300)
-    sizeC.MaxSize = Vector2.new(440, 540)
-    sizeC.Parent  = frame
+local function pad(inst, t, r, b, l)
+    local p = Instance.new("UIPadding")
+    p.PaddingTop    = UDim.new(0, t or 0)
+    p.PaddingRight  = UDim.new(0, r or 0)
+    p.PaddingBottom = UDim.new(0, b or 0)
+    p.PaddingLeft   = UDim.new(0, l or 0)
+    p.Parent = inst
+end
 
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 14)
-    corner.Parent       = frame
+local function anim(inst, props, duration)
+    if not State.animations then
+        for k, v in pairs(props) do inst[k] = v end
+        return
+    end
+    TweenService:Create(inst, TweenInfo.new(duration or 0.15), props):Play()
+end
 
-    local pad = Instance.new("UIPadding")
-    pad.PaddingTop    = UDim.new(0, 14)
-    pad.PaddingBottom = UDim.new(0, 14)
-    pad.PaddingLeft   = UDim.new(0, 14)
-    pad.PaddingRight  = UDim.new(0, 14)
-    pad.Parent        = frame
+-- ============================================================
+-- FLOATING OPEN BUTTON (visible always)
+-- ============================================================
+local fab = Instance.new("TextButton")
+fab.Name              = "FAB"
+fab.Size              = UDim2.new(0, 54, 0, 54)
+fab.Position          = UDim2.new(1, -70, 0, 70)
+fab.BackgroundColor3  = State.theme.accent
+fab.Text              = "EE"
+fab.TextColor3        = State.theme.text
+fab.Font              = Enum.Font.GothamBold
+fab.TextSize          = 16
+fab.AutoButtonColor   = true
+fab.ZIndex            = 10
+fab.Parent            = gui
+corner(fab, 27)
+stroke(fab, State.theme.accent2, 2)
+
+-- ============================================================
+-- MAIN PANEL
+-- ============================================================
+local panel = Instance.new("Frame")
+panel.Name              = "Panel"
+panel.AnchorPoint       = Vector2.new(0, 0.5)
+panel.Position          = UDim2.new(0, 16, 0.5, 0)
+panel.Size              = UDim2.new(0, 320, 0, 460)
+panel.BackgroundColor3  = State.theme.panel
+panel.BorderSizePixel   = 0
+panel.Active            = true
+panel.Visible           = true
+panel.Parent            = gui
+corner(panel, 16)
+stroke(panel, State.theme.stroke, 1.5)
+
+local panelConstraint = Instance.new("UISizeConstraint")
+panelConstraint.MinSize = Vector2.new(260, 380)
+panelConstraint.MaxSize = Vector2.new(400, 600)
+panelConstraint.Parent  = panel
+
+-- scale wrapper
+local scale = Instance.new("UIScale")
+scale.Scale = State.uiScale
+scale.Parent = panel
+
+-- ============================================================
+-- HEADER
+-- ============================================================
+local header = Instance.new("Frame")
+header.Name = "Header"
+header.Size = UDim2.new(1, 0, 0, 56)
+header.BackgroundColor3 = State.theme.bg
+header.BorderSizePixel = 0
+header.Parent = panel
+corner(header, 16)
+
+local headerFiller = Instance.new("Frame")
+headerFiller.Size = UDim2.new(1, 0, 0, 16)
+headerFiller.Position = UDim2.new(0, 0, 1, -16)
+headerFiller.BackgroundColor3 = State.theme.bg
+headerFiller.BorderSizePixel = 0
+headerFiller.Parent = header
+
+local headerTitle = Instance.new("TextLabel")
+headerTitle.Size = UDim2.new(1, -110, 1, 0)
+headerTitle.Position = UDim2.new(0, 16, 0, 0)
+headerTitle.BackgroundTransparency = 1
+headerTitle.Text = "Elites Essentials"
+headerTitle.TextColor3 = State.theme.text
+headerTitle.Font = Enum.Font.GothamBold
+headerTitle.TextSize = 18
+headerTitle.TextXAlignment = Enum.TextXAlignment.Left
+headerTitle.Parent = header
+
+local headerDot = Instance.new("Frame")
+headerDot.Size = UDim2.new(0, 8, 0, 8)
+headerDot.Position = UDim2.new(1, -86, 0.5, -4)
+headerDot.BackgroundColor3 = State.theme.ok
+headerDot.BorderSizePixel = 0
+headerDot.Parent = header
+corner(headerDot, 4)
+
+local headerStatus = Instance.new("TextLabel")
+headerStatus.Size = UDim2.new(0, 60, 1, 0)
+headerStatus.Position = UDim2.new(1, -76, 0, 0)
+headerStatus.BackgroundTransparency = 1
+headerStatus.Text = "Ready"
+headerStatus.TextColor3 = State.theme.sub
+headerStatus.Font = Enum.Font.Gotham
+headerStatus.TextSize = 12
+headerStatus.TextXAlignment = Enum.TextXAlignment.Left
+headerStatus.Parent = header
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 32, 0, 32)
+closeBtn.Position = UDim2.new(1, -44, 0.5, -16)
+closeBtn.BackgroundColor3 = State.theme.card
+closeBtn.Text = "X"
+closeBtn.TextColor3 = State.theme.text
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 14
+closeBtn.AutoButtonColor = true
+closeBtn.Parent = header
+corner(closeBtn, 8)
+
+-- ============================================================
+-- TAB BAR
+-- ============================================================
+local tabBar = Instance.new("Frame")
+tabBar.Name = "TabBar"
+tabBar.Position = UDim2.new(0, 12, 0, 64)
+tabBar.Size = UDim2.new(1, -24, 0, 40)
+tabBar.BackgroundColor3 = State.theme.card
+tabBar.BorderSizePixel = 0
+tabBar.Parent = panel
+corner(tabBar, 10)
+
+local tabLayout = Instance.new("UIListLayout")
+tabLayout.FillDirection = Enum.FillDirection.Horizontal
+tabLayout.Padding = UDim.new(0, 4)
+tabLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+tabLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+tabLayout.SortOrder = Enum.SortOrder.LayoutOrder
+tabLayout.Parent = tabBar
+
+local tabPad = Instance.new("UIPadding")
+tabPad.PaddingTop = UDim.new(0, 4)
+tabPad.PaddingBottom = UDim.new(0, 4)
+tabPad.PaddingLeft = UDim.new(0, 4)
+tabPad.PaddingRight = UDim.new(0, 4)
+tabPad.Parent = tabBar
+
+local tabButtons = {}
+local tabNames = {"Home", "Farming", "Settings"}
+
+-- ============================================================
+-- CONTENT AREA
+-- ============================================================
+local content = Instance.new("Frame")
+content.Name = "Content"
+content.Position = UDim2.new(0, 12, 0, 112)
+content.Size = UDim2.new(1, -24, 1, -124)
+content.BackgroundTransparency = 1
+content.ClipsDescendants = true
+content.Parent = panel
+
+local pages = {}
+for _, name in ipairs(tabNames) do
+    local page = Instance.new("ScrollingFrame")
+    page.Name = name
+    page.Size = UDim2.new(1, 0, 1, 0)
+    page.BackgroundTransparency = 1
+    page.BorderSizePixel = 0
+    page.ScrollBarThickness = 3
+    page.ScrollBarImageColor3 = State.theme.accent
+    page.CanvasSize = UDim2.new(0, 0, 0, 0)
+    page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    page.Visible = (name == "Home")
+    page.Parent = content
 
     local list = Instance.new("UIListLayout")
-    list.Padding             = UDim.new(0, 10)
-    list.SortOrder           = Enum.SortOrder.LayoutOrder
-    list.HorizontalAlignment = Enum.HorizontalAlignment.Center
-    list.Parent              = frame
+    list.Padding = UDim.new(0, 8)
+    list.SortOrder = Enum.SortOrder.LayoutOrder
+    list.Parent = page
 
-    -- title
-    titleLabel = Instance.new("TextLabel")
-    titleLabel.Name               = "Title"
-    titleLabel.LayoutOrder        = 1
-    titleLabel.Size               = UDim2.new(1, 0, 0, 40)
-    titleLabel.BackgroundTransparency = 1
-    titleLabel.Text               = "MM2 Auto Farm"
-    titleLabel.TextColor3         = Color3.fromRGB(245, 245, 250)
-    titleLabel.Font               = Enum.Font.GothamBold
-    titleLabel.TextScaled         = true
-    titleLabel.Parent             = frame
+    pages[name] = page
+end
 
-    local titleC = Instance.new("UITextSizeConstraint")
-    titleC.MaxTextSize = 22
-    titleC.MinTextSize = 14
-    titleC.Parent      = titleLabel
+-- ============================================================
+-- FACTORY: Card
+-- ============================================================
+local function card(parent, height)
+    local f = Instance.new("Frame")
+    f.Size = UDim2.new(1, 0, 0, height or 60)
+    f.BackgroundColor3 = State.theme.card
+    f.BorderSizePixel = 0
+    f.Parent = parent
+    corner(f, 10)
+    stroke(f, State.theme.stroke, 1)
+    return f
+end
 
-    -- status
-    statusLabel = Instance.new("TextLabel")
-    statusLabel.Name               = "Status"
-    statusLabel.LayoutOrder        = 2
-    statusLabel.Size               = UDim2.new(1, 0, 0, 26)
-    statusLabel.BackgroundTransparency = 1
-    statusLabel.Text               = "UI Loaded Successfully — tap ON to start"
-    statusLabel.TextColor3         = Color3.fromRGB(120, 220, 140)
-    statusLabel.Font               = Enum.Font.Gotham
-    statusLabel.TextSize           = 13
-    statusLabel.TextWrapped        = true
-    statusLabel.Parent             = frame
+local function label(parent, text, size, color, bold)
+    local l = Instance.new("TextLabel")
+    l.Size = UDim2.new(1, -20, 0, size or 18)
+    l.Position = UDim2.new(0, 10, 0, 8)
+    l.BackgroundTransparency = 1
+    l.Text = text
+    l.TextColor3 = color or State.theme.text
+    l.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
+    l.TextSize = 14
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    l.TextWrapped = true
+    l.Parent = parent
+    return l
+end
 
-    -- toggle
-    toggleBtn = Instance.new("TextButton")
-    toggleBtn.Name             = "Toggle"
-    toggleBtn.LayoutOrder      = 3
-    toggleBtn.Size             = UDim2.new(1, 0, 0, 56)
-    toggleBtn.BackgroundColor3 = Color3.fromRGB(190, 50, 50)
-    toggleBtn.Text             = "OFF"
-    toggleBtn.TextColor3       = Color3.fromRGB(255, 255, 255)
-    toggleBtn.Font             = Enum.Font.GothamBold
-    toggleBtn.TextScaled       = true
-    toggleBtn.AutoButtonColor  = true
-    toggleBtn.Parent           = frame
+-- ============================================================
+-- FACTORY: Toggle row
+-- ============================================================
+local function toggleRow(parent, labelText, initial, onChange)
+    local row = card(parent, 56)
+    local lbl = label(row, labelText, 20, State.theme.text, false)
+    lbl.Position = UDim2.new(0, 12, 0.5, -10)
+    lbl.Size = UDim2.new(1, -100, 0, 20)
 
-    local toggleC = Instance.new("UITextSizeConstraint")
-    toggleC.MaxTextSize = 20
-    toggleC.MinTextSize = 12
-    toggleC.Parent      = toggleBtn
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, 68, 0, 34)
+    btn.Position = UDim2.new(1, -80, 0.5, -17)
+    btn.BackgroundColor3 = initial and State.theme.ok or State.theme.bad
+    btn.Text = initial and "ON" or "OFF"
+    btn.TextColor3 = State.theme.text
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 13
+    btn.AutoButtonColor = true
+    btn.Parent = row
+    corner(btn, 8)
 
-    local toggleCorner = Instance.new("UICorner")
-    toggleCorner.CornerRadius = UDim.new(0, 10)
-    toggleCorner.Parent       = toggleBtn
+    local state = initial
+    btn.MouseButton1Click:Connect(function()
+        state = not state
+        anim(btn, { BackgroundColor3 = state and State.theme.ok or State.theme.bad }, 0.15)
+        btn.Text = state and "ON" or "OFF"
+        if onChange then onChange(state) end
+    end)
 
-    -- print diagnostics
-    local printBtn = Instance.new("TextButton")
-    printBtn.Name             = "PrintDiag"
-    printBtn.LayoutOrder      = 4
-    printBtn.Size             = UDim2.new(1, 0, 0, 48)
-    printBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 75)
-    printBtn.Text             = "Print Diagnostics"
-    printBtn.TextColor3       = Color3.fromRGB(230, 230, 240)
-    printBtn.Font             = Enum.Font.Gotham
-    printBtn.TextScaled       = true
-    printBtn.Parent           = frame
+    return row, function() return state end
+end
 
-    local printC = Instance.new("UITextSizeConstraint")
-    printC.MaxTextSize = 16
-    printC.MinTextSize = 11
-    printC.Parent      = printBtn
+-- ============================================================
+-- FACTORY: Slider row
+-- ============================================================
+local function sliderRow(parent, labelText, minV, maxV, initial, step, onChange)
+    local row = card(parent, 72)
+    local lbl = label(row, labelText, 20, State.theme.text, false)
+    lbl.Position = UDim2.new(0, 12, 0, 8)
+    lbl.Size = UDim2.new(1, -100, 0, 18)
 
-    local printCorner = Instance.new("UICorner")
-    printCorner.CornerRadius = UDim.new(0, 10)
-    printCorner.Parent       = printBtn
+    local valueLbl = Instance.new("TextLabel")
+    valueLbl.Size = UDim2.new(0, 80, 0, 18)
+    valueLbl.Position = UDim2.new(1, -92, 0, 8)
+    valueLbl.BackgroundTransparency = 1
+    valueLbl.Text = tostring(initial)
+    valueLbl.TextColor3 = State.theme.accent
+    valueLbl.Font = Enum.Font.GothamBold
+    valueLbl.TextSize = 13
+    valueLbl.TextXAlignment = Enum.TextXAlignment.Right
+    valueLbl.Parent = row
 
-    -- close
-    local closeBtn = Instance.new("TextButton")
-    closeBtn.Name             = "Close"
-    closeBtn.LayoutOrder      = 5
-    closeBtn.Size             = UDim2.new(1, 0, 0, 48)
-    closeBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 95)
-    closeBtn.Text             = "Close"
-    closeBtn.TextColor3       = Color3.fromRGB(255, 255, 255)
-    closeBtn.Font             = Enum.Font.Gotham
-    closeBtn.TextScaled       = true
-    closeBtn.Parent           = frame
+    local track = Instance.new("Frame")
+    track.Size = UDim2.new(1, -24, 0, 8)
+    track.Position = UDim2.new(0, 12, 0, 42)
+    track.BackgroundColor3 = State.theme.bg
+    track.BorderSizePixel = 0
+    track.Parent = row
+    corner(track, 4)
 
-    local closeC = Instance.new("UITextSizeConstraint")
-    closeC.MaxTextSize = 16
-    closeC.MinTextSize = 11
-    closeC.Parent      = closeBtn
+    local fill = Instance.new("Frame")
+    local pct = (initial - minV) / (maxV - minV)
+    fill.Size = UDim2.new(pct, 0, 1, 0)
+    fill.BackgroundColor3 = State.theme.accent
+    fill.BorderSizePixel = 0
+    fill.Parent = track
+    corner(fill, 4)
 
-    local closeCorner = Instance.new("UICorner")
-    closeCorner.CornerRadius = UDim.new(0, 10)
-    closeCorner.Parent       = closeBtn
+    local knob = Instance.new("TextButton")
+    knob.Size = UDim2.new(0, 24, 0, 24)
+    knob.Position = UDim2.new(pct, -12, 0.5, -12)
+    knob.BackgroundColor3 = State.theme.text
+    knob.Text = ""
+    knob.AutoButtonColor = false
+    knob.Parent = track
+    corner(knob, 12)
 
-    -- error banner
-    errorBanner = Instance.new("TextLabel")
-    errorBanner.Name                 = "ErrorBanner"
-    errorBanner.LayoutOrder          = 6
-    errorBanner.Size                 = UDim2.new(1, 0, 0, 0)
-    errorBanner.AutomaticSize        = Enum.AutomaticSize.Y
-    errorBanner.BackgroundColor3     = Color3.fromRGB(90, 20, 20)
-    errorBanner.TextColor3           = Color3.fromRGB(255, 200, 200)
-    errorBanner.Font                 = Enum.Font.Gotham
-    errorBanner.TextSize             = 12
-    errorBanner.TextWrapped          = true
-    errorBanner.Visible              = false
-    errorBanner.Parent               = frame
+    local value = initial
+    local function snap(v)
+        v = math.clamp(v, minV, maxV)
+        if step and step > 0 then
+            v = math.floor((v / step) + 0.5) * step
+        end
+        return v
+    end
 
-    local errPad = Instance.new("UIPadding")
-    errPad.PaddingTop    = UDim.new(0, 6)
-    errPad.PaddingBottom = UDim.new(0, 6)
-    errPad.PaddingLeft   = UDim.new(0, 8)
-    errPad.PaddingRight  = UDim.new(0, 8)
-    errPad.Parent        = errorBanner
+    local function applyFromX(x)
+        local abs = track.AbsolutePosition.X
+        local width = track.AbsoluteSize.X
+        if width <= 0 then return end
+        local p = math.clamp((x - abs) / width, 0, 1)
+        local v = snap(minV + p * (maxV - minV))
+        value = v
+        local np = (v - minV) / (maxV - minV)
+        fill.Size = UDim2.new(np, 0, 1, 0)
+        knob.Position = UDim2.new(np, -12, 0.5, -12)
+        valueLbl.Text = tostring(v)
+        if onChange then onChange(v) end
+    end
 
-    -- touch drag
     local dragging = false
-    local dragStart, startPos
-
-    frame.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.Touch
-        or input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging  = true
-            dragStart = input.Position
-            startPos  = frame.Position
+    knob.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch or
+           input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
         end
     end)
 
-    UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.Touch
-        or input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = false
+    track.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch or
+           input.UserInputType == Enum.UserInputType.MouseButton1 then
+            applyFromX(input.Position.X)
         end
     end)
 
     UserInputService.InputChanged:Connect(function(input)
         if not dragging then return end
-        if input.UserInputType == Enum.UserInputType.Touch
-        or input.UserInputType == Enum.UserInputType.MouseMovement then
-            local delta = input.Position - dragStart
-            frame.Position = UDim2.new(
-                startPos.X.Scale, startPos.X.Offset + delta.X,
-                startPos.Y.Scale, startPos.Y.Offset + delta.Y
-            )
+        if input.UserInputType == Enum.UserInputType.Touch or
+           input.UserInputType == Enum.UserInputType.MouseMovement then
+            applyFromX(input.Position.X)
         end
     end)
 
-    -- close handler
-    closeBtn.MouseButton1Click:Connect(function()
-        intentionalClose = true
-        state.enabled = false
-        log("INFO", "close pressed — destroying gui")
-        gui:Destroy()
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch or
+           input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
     end)
-end)
 
-if not buildOk then
-    log("ERR", "GUI build threw: " .. tostring(buildErr))
-    return
-end
-log("INFO", "GUI tree built in memory")
-
-------------------------------------------------------------------
--- 6. farming functions
-------------------------------------------------------------------
-local function getHRP()
-    local char = player.Character
-    if not char then return nil end
-    return char:FindFirstChild("HumanoidRootPart")
+    return row, function() return value end, function() valueLbl.Text = tostring(value) end
 end
 
-local function getHumanoid()
-    local char = player.Character
-    if not char then return nil end
-    return char:FindFirstChildOfClass("Humanoid")
-end
+-- ============================================================
+-- FACTORY: Text input row
+-- ============================================================
+local function numberInputRow(parent, labelText, initial, minV, maxV, onChange)
+    local row = card(parent, 56)
+    local lbl = label(row, labelText, 20, State.theme.text, false)
+    lbl.Position = UDim2.new(0, 12, 0.5, -10)
+    lbl.Size = UDim2.new(1, -120, 0, 20)
 
-local function isCollectiblePart(obj)
-    if not obj:IsA("BasePart") then return false end
-    local char = player.Character
-    if char and obj:IsDescendantOf(char) then return false end
-    local lower = obj.Name:lower()
-    for _, needle in ipairs(CONFIG.matchNames) do
-        if lower:find(needle, 1, true) then return true end
-    end
-    return false
-end
+    local box = Instance.new("TextBox")
+    box.Size = UDim2.new(0, 90, 0, 34)
+    box.Position = UDim2.new(1, -102, 0.5, -17)
+    box.BackgroundColor3 = State.theme.bg
+    box.Text = tostring(initial)
+    box.TextColor3 = State.theme.text
+    box.PlaceholderText = "0"
+    box.Font = Enum.Font.Gotham
+    box.TextSize = 14
+    box.ClearTextOnFocus = false
+    box.Parent = row
+    corner(box, 8)
+    stroke(box, State.theme.stroke, 1)
 
-local function findCollectibles()
-    local list = {}
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        if isCollectiblePart(obj) then
-            table.insert(list, obj)
-        end
-    end
-    return list
-end
-
-local function resetCharacter()
-    local hum = getHumanoid()
-    if hum and hum.Health > 0 then
-        hum.Health = 0
-        return true
-    end
-    return false
-end
-
-local function setStatus(text, color)
-    if statusLabel and statusLabel.Parent then
-        statusLabel.Text = text
-        if color then statusLabel.TextColor3 = color end
-    end
-end
-
-local function farmLoop()
-    state.noCoinTimer = 0
-    while state.enabled do
-        local ok, err = pcall(function()
-            local hrp = getHRP()
-            if not hrp then
-                setStatus("no character — waiting", Color3.fromRGB(200, 180, 100))
-                return
-            end
-
-            local hum = getHumanoid()
-            local alive = hum and hum.Health > 0
-
-            local items = findCollectibles()
-            if #items > 0 then
-                state.noCoinTimer = 0
-                local count = 0
-                for _, item in ipairs(items) do
-                    if not state.enabled then break end
-                    if item and item.Parent and item:IsA("BasePart") then
-                        local h = getHRP()
-                        if not h then break end
-                        h.CFrame = item.CFrame
-                        count += 1
-                        setStatus(
-                            string.format("collected %d | last: %s", count, item.Name),
-                            Color3.fromRGB(120, 220, 140)
-                        )
-                        task.wait(CONFIG.collectDelay)
-                    end
-                end
-                setStatus(
-                    string.format("pass done: %d items", count),
-                    Color3.fromRGB(120, 220, 140)
-                )
-            else
-                state.noCoinTimer += CONFIG.scanInterval
-                local left = math.max(0, CONFIG.noCoinReset - state.noCoinTimer)
-                if alive then
-                    setStatus(
-                        string.format("no items — reset in %.1fs", left),
-                        Color3.fromRGB(200, 180, 100)
-                    )
-                else
-                    setStatus(
-                        string.format("dead — waiting (%.1fs)", left),
-                        Color3.fromRGB(170, 170, 180)
-                    )
-                end
-
-                if state.noCoinTimer >= CONFIG.noCoinReset then
-                    if alive and CONFIG.autoReset then
-                        setStatus("resetting...", Color3.fromRGB(200, 120, 120))
-                        resetCharacter()
-                        state.noCoinTimer = 0
-                        task.wait(CONFIG.noCoinReset)  -- cooldown between resets
-                    else
-                        state.noCoinTimer = 0
-                    end
-                end
-            end
-        end)
-
-        if not ok then
-            log("ERR", "farm loop error: " .. tostring(err))
-            setStatus("farm error — check console", Color3.fromRGB(255, 120, 120))
-        end
-
-        task.wait(CONFIG.scanInterval)
-    end
-end
-
-local function startFarm()
-    if state.enabled then return end
-    state.enabled = true
-    if toggleBtn then
-        toggleBtn.Text = "ON"
-        toggleBtn.BackgroundColor3 = Color3.fromRGB(45, 190, 70)
-    end
-    setStatus("running...", Color3.fromRGB(120, 220, 140))
-    log("INFO", "farm started")
-    state.farmThread = task.spawn(farmLoop)
-end
-
-local function stopFarm()
-    state.enabled = false
-    if toggleBtn then
-        toggleBtn.Text = "OFF"
-        toggleBtn.BackgroundColor3 = Color3.fromRGB(190, 50, 50)
-    end
-    setStatus("idle", Color3.fromRGB(170, 170, 180))
-    log("INFO", "farm stopped")
-end
-
--- wire toggle
-if toggleBtn then
-    toggleBtn.MouseButton1Click:Connect(function()
-        if state.enabled then stopFarm() else startFarm() end
-    end)
-end
-
--- wire diagnostics print
-local printBtnRef = frame:FindFirstChild("PrintDiag")
-if printBtnRef then
-    printBtnRef.MouseButton1Click:Connect(function()
-        print("===== MM2-DIAG REPORT =====")
-        for _, line in ipairs(diagLog) do
-            print(line)
-        end
-        print("gui.Parent        =", gui.Parent and gui.Parent:GetFullName() or "nil")
-        print("gui.Enabled       =", gui.Enabled)
-        print("gui.DisplayOrder  =", gui.DisplayOrder)
-        print("gui.AbsoluteSize  =", tostring(gui.AbsoluteSize))
-        print("frame.AbsoluteSize=", tostring(frame.AbsoluteSize))
-        print("frame.Position    =", tostring(frame.Position))
-        print("farm.enabled      =", tostring(state.enabled))
-        print("noCoinTimer       =", tostring(state.noCoinTimer))
-
-        local matches = findCollectibles()
-        print("workspace parts   =", #workspace:GetDescendants())
-        print("coin matches      =", #matches)
-        if #matches > 0 then
-            local names = {}
-            for i = 1, math.min(#matches, 10) do
-                names[#names + 1] = matches[i].Name
-            end
-            print("matched names     =", table.concat(names, ", "))
+    local value = initial
+    box.FocusLost:Connect(function()
+        local n = tonumber(box.Text)
+        if n then
+            n = math.clamp(math.floor(n), minV, maxV)
+            value = n
+            box.Text = tostring(n)
+            if onChange then onChange(n) end
         else
-            -- dump nearby part names to help identify coin naming
-            local samples = {}
-            for _, obj in ipairs(workspace:GetDescendants()) do
-                if obj:IsA("BasePart") then
-                    samples[#samples + 1] = obj.Name
-                    if #samples >= 25 then break end
-                end
-            end
-            print("sample part names =", table.concat(samples, ", "))
-        end
-
-        local cam = workspace.CurrentCamera
-        print("ViewportSize      =", cam and tostring(cam.ViewportSize) or "no camera")
-        print("===========================")
-    end)
-end
-
-------------------------------------------------------------------
--- 7. parent the GUI
-------------------------------------------------------------------
-local parentOk, parentErr = pcall(function()
-    gui.Parent = playerGui
-end)
-
-if not parentOk then
-    log("ERR", "parent to PlayerGui failed: " .. tostring(parentErr))
-    local cgOk, cg = pcall(function() return game:GetService("CoreGui") end)
-    if cgOk and cg then
-        local fbOk, fbErr = pcall(function() gui.Parent = cg end)
-        if fbOk then
-            log("WARN", "fell back to CoreGui successfully")
-        else
-            log("ERR", "CoreGui fallback failed: " .. tostring(fbErr))
-            return
-        end
-    else
-        log("ERR", "no fallback parent")
-        return
-    end
-else
-    log("INFO", "gui.Parent = " .. gui.Parent:GetFullName())
-end
-
-------------------------------------------------------------------
--- 8. verify parent + size
-------------------------------------------------------------------
-task.wait(0.35)
-
-local problems = {}
-if not gui or not gui.Parent then
-    table.insert(problems, "ScreenGui has no parent")
-end
-if gui and not gui.Enabled then
-    table.insert(problems, "ScreenGui.Enabled is false")
-end
-if gui and (gui.AbsoluteSize.X <= 0 or gui.AbsoluteSize.Y <= 0) then
-    table.insert(problems, string.format(
-        "ScreenGui.AbsoluteSize = %s", tostring(gui.AbsoluteSize)))
-end
-if frame and (frame.AbsoluteSize.X <= 0 or frame.AbsoluteSize.Y <= 0) then
-    table.insert(problems, string.format(
-        "Root.AbsoluteSize = %s", tostring(frame.AbsoluteSize)))
-end
-
-if #problems > 0 then
-    for _, p in ipairs(problems) do
-        log("ERR", "verification: " .. p)
-    end
-    if errorBanner and errorBanner.Parent then
-        errorBanner.Visible = true
-        errorBanner.Text = "UI issues:\n" .. table.concat(problems, "\n")
-    end
-else
-    log("INFO", "verification passed: parented, enabled, non-zero size")
-end
-
-------------------------------------------------------------------
--- 9. watchdog — re-parent if game clears PlayerGui
-------------------------------------------------------------------
-gui.AncestryChanged:Connect(function(_, newParent)
-    if intentionalClose then return end
-    if newParent ~= nil then return end
-    if gui.Parent ~= nil then return end
-
-    log("WARN", "ScreenGui unparented — likely game cleared PlayerGui")
-
-    task.defer(function()
-        if gui.Parent ~= nil then return end
-        local ok, err = pcall(function()
-            gui.Parent = playerGui
-        end)
-        if ok then
-            log("INFO", "re-parented successfully")
-        else
-            log("ERR", "re-parent failed: " .. tostring(err))
+            box.Text = tostring(value)
         end
     end)
-end)
 
-------------------------------------------------------------------
--- 10. periodic parent check (belt and suspenders)
-------------------------------------------------------------------
-task.spawn(function()
-    while gui and gui.Parent ~= nil or (gui and not intentionalClose) do
-        task.wait(2)
-        if intentionalClose then break end
-        if not gui or not gui.Parent then
-            if gui and not intentionalClose then
-                pcall(function() gui.Parent = playerGui end)
-            end
+    return row, function() return value end
+end
+
+-- ============================================================
+-- FACTORY: Dropdown (for theme)
+-- ============================================================
+local function dropdownRow(parent, labelText, options, initial, onChange)
+    local row = card(parent, 56)
+    local lbl = label(row, labelText, 20, State.theme.text, false)
+    lbl.Position = UDim2.new(0, 12, 0.5, -10)
+    lbl.Size = UDim2.new(1, -140, 0, 20)
+
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, 110, 0, 34)
+    btn.Position = UDim2.new(1, -122, 0.5, -17)
+    btn.BackgroundColor3 = State.theme.bg
+    btn.Text = initial
+    btn.TextColor3 = State.theme.text
+    btn.Font = Enum.Font.Gotham
+    btn.TextSize = 13
+    btn.AutoButtonColor = true
+    btn.Parent = row
+    corner(btn, 8)
+    stroke(btn, State.theme.stroke, 1)
+
+    local open = false
+    local menu
+
+    local function buildMenu()
+        if menu then menu:Destroy() end
+        menu = Instance.new("Frame")
+        menu.Size = UDim2.new(0, 110, 0, #options * 34 + 8)
+        menu.Position = UDim2.new(1, -122, 1, 4)
+        menu.BackgroundColor3 = State.theme.card
+        menu.BorderSizePixel = 0
+        menu.ZIndex = 20
+        menu.Parent = btn
+        corner(menu, 8)
+        stroke(menu, State.theme.stroke, 1)
+
+        local ml = Instance.new("UIListLayout")
+        ml.Padding = UDim.new(0, 2)
+        ml.SortOrder = Enum.SortOrder.LayoutOrder
+        ml.Parent = menu
+
+        local mp = Instance.new("UIPadding")
+        mp.PaddingTop = UDim.new(0, 4)
+        mp.PaddingBottom = UDim.new(0, 4)
+        mp.PaddingLeft = UDim.new(0, 4)
+        mp.PaddingRight = UDim.new(0, 4)
+        mp.Parent = menu
+
+        for i, opt in ipairs(options) do
+            local item = Instance.new("TextButton")
+            item.Size = UDim2.new(1, 0, 0, 32)
+            item.BackgroundColor3 = State.theme.bg
+            item.Text = opt
+            item.TextColor3 = State.theme.text
+            item.Font = Enum.Font.Gotham
+            item.TextSize = 13
+            item.ZIndex = 21
+            item.LayoutOrder = i
+            item.Parent = menu
+            corner(item, 6)
+
+            item.MouseButton1Click:Connect(function()
+                btn.Text = opt
+                if onChange then onChange(opt) end
+                open = false
+                menu:Destroy()
+                menu = nil
+            end)
         end
     end
-end)
 
-log("INFO", "MM2 Auto Farm loaded — tap ON to arm the collector")
+    btn.MouseButton1Click:Connect(function()
+        open = not open
+        if open then buildMenu() elseif menu then menu:Destroy() menu = nil end
+    end)
+
+    return row
+end
+
+-- ============================================================
+-- TAB BUTTONS
+-- ============================================================
+for i, name in ipairs(tabNames) do
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(1/3, -4, 1, -8)
+    b.BackgroundColor3 = (name == "Home") and State.theme.accent or State.theme.panel
+    b.Text = name
+    b.TextColor3 = State.theme.text
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = 13
+    b.AutoButtonColor = true
+    b.LayoutOrder = i
+    b.Parent = tabBar
+    corner(b, 8)
+
+    b.MouseButton1Click:Connect(function()
+        for _, p in pairs(pages) do p.Visible = false end
+        pages[name].Visible = true
+        for _, other in pairs(tabButtons) do
+            anim(other, { BackgroundColor3 = State.theme.panel }, 0.15)
+        end
+        anim(b, { BackgroundColor3 = State.theme.accent }, 0.15)
+        State.tab = name
+    end)
+
+    tabButtons[name] = b
+end
+
+-- ============================================================
+-- HOME PAGE
+-- ============================================================
+do
+    local page = pages.Home
+
+    local heroCard = card(page, 90)
+    local heroTitle = Instance.new("TextLabel")
+    heroTitle.Size = UDim2.new(1, -20, 0, 26)
+    heroTitle.Position = UDim2.new(0, 10, 0, 10)
+    heroTitle.BackgroundTransparency = 1
+    heroTitle.Text = "Elites Essentials"
+    heroTitle.TextColor3 = State.theme.accent
+    heroTitle.Font = Enum.Font.GothamBold
+    heroTitle.TextSize = 20
+    heroTitle.TextXAlignment = Enum.TextXAlignment.Left
+    heroTitle.Parent = heroCard
+
+    local heroSub = Instance.new("TextLabel")
+    heroSub.Size = UDim2.new(1, -20, 0, 18)
+    heroSub.Position = UDim2.new(0, 10, 0, 36)
+    heroSub.BackgroundTransparency = 1
+    heroSub.Text = "Murder Mystery 2 · Interface"
+    heroSub.TextColor3 = State.theme.sub
+    heroSub.Font = Enum.Font.Gotham
+    heroSub.TextSize = 12
+    heroSub.TextXAlignment = Enum.TextXAlignment.Left
+    heroSub.Parent = heroCard
+
+    local heroStatusRow = Instance.new("Frame")
+    heroStatusRow.Size = UDim2.new(1, -20, 0, 24)
+    heroStatusRow.Position = UDim2.new(0, 10, 0, 58)
+    heroStatusRow.BackgroundTransparency = 1
+    heroStatusRow.Parent = heroCard
+
+    local sDot = Instance.new("Frame")
+    sDot.Size = UDim2.new(0, 8, 0, 8)
+    sDot.Position = UDim2.new(0, 0, 0.5, -4)
+    sDot.BackgroundColor3 = State.theme.ok
+    sDot.BorderSizePixel = 0
+    sDot.Parent = heroStatusRow
+    corner(sDot, 4)
+
+    local sText = Instance.new("TextLabel")
+    sText.Size = UDim2.new(1, -20, 1, 0)
+    sText.Position = UDim2.new(0, 16, 0, 0)
+    sText.BackgroundTransparency = 1
+    sText.Text = "Interface loaded successfully"
+    sText.TextColor3 = State.theme.sub
+    sText.Font = Enum.Font.Gotham
+    sText.TextSize = 12
+    sText.TextXAlignment = Enum.TextXAlignment.Left
+    sText.Parent = heroStatusRow
+
+    -- Player info
+    local infoCard = card(page, 116)
+    local infoTitle = label(infoCard, "Player Info", 18, State.theme.text, true)
+    infoTitle.Position = UDim2.new(0, 12, 0, 10)
+
+    local function makeInfoRow(y, k)
+        local keyLbl = Instance.new("TextLabel")
+        keyLbl.Size = UDim2.new(0, 110, 0, 20)
+        keyLbl.Position = UDim2.new(0, 12, 0, y)
+        keyLbl.BackgroundTransparency = 1
+        keyLbl.Text = k
+        keyLbl.TextColor3 = State.theme.sub
+        keyLbl.Font = Enum.Font.Gotham
+        keyLbl.TextSize = 12
+        keyLbl.TextXAlignment = Enum.TextXAlignment.Left
+        keyLbl.Parent = infoCard
+
+        local valLbl = Instance.new("TextLabel")
+        valLbl.Size = UDim2.new(1, -140, 0, 20)
+        valLbl.Position = UDim2.new(0, 128, 0, y)
+        valLbl.BackgroundTransparency = 1
+        valLbl.Text = "—"
+        valLbl.TextColor3 = State.theme.text
+        valLbl.Font = Enum.Font.GothamBold
+        valLbl.TextSize = 12
+        valLbl.TextXAlignment = Enum.TextXAlignment.Right
+        valLbl.Parent = infoCard
+        return valLbl
+    end
+
+    local nameVal     = makeInfoRow(38, "Username")
+    local displayVal  = makeInfoRow(58, "Display Name")
+    local idVal       = makeInfoRow(78, "User ID")
+    local versionVal  = makeInfoRow(98, "Interface")
+
+    nameVal.Text    = player.Name
+    displayVal.Text = player.DisplayName or player.Name
+    idVal.Text      = tostring(player.UserId)
+    versionVal.Text = "v1.0.0"
+
+    local versionCard = card(page, 44)
+    local vLbl = Instance.new("TextLabel")
+    vLbl.Size = UDim2.new(1, -20, 1, 0)
+    vLbl.Position = UDim2.new(0, 10, 0, 0)
+    vLbl.BackgroundTransparency = 1
+    vLbl.Text = "Elites Essentials · v1.0.0"
+    vLbl.TextColor3 = State.theme.sub
+    vLbl.Font = Enum.Font.Gotham
+    vLbl.TextSize = 12
+    vLbl.TextXAlignment = Enum.TextXAlignment.Center
+    vLbl.Parent = versionCard
+end
+
+-- ============================================================
+-- FARMING PAGE
+-- ============================================================
+local farmingStatusLabel
+local coinCounterLabel
+local bagProgressLabel
+local bagFill
+local farmStartBtn
+local farmStopBtn
+
+do
+    local page = pages.Farming
+
+    -- Toggle
+    toggleRow(page, "Coin Farm", State.farming, function(v)
+        State.farming = v
+        if farmingStatusLabel then
+            farmingStatusLabel.Text = v and "Active" or "Idle"
+            farmingStatusLabel.TextColor3 = v and State.theme.ok or State.theme.sub
+        end
+    end)
+
+    -- Status card
+    local statusCard = card(page, 56)
+    local sTitle = label(statusCard, "Farming Status", 18, State.theme.text, true)
+    sTitle.Position = UDim2.new(0, 12, 0, 8)
+    farmingStatusLabel = Instance.new("TextLabel")
+    farmingStatusLabel.Size = UDim2.new(1, -24, 0, 20)
+    farmingStatusLabel.Position = UDim2.new(0, 12, 0, 28)
+    farmingStatusLabel.BackgroundTransparency = 1
+    farmingStatusLabel.Text = State.farming and "Active" or "Idle"
+    farmingStatusLabel.TextColor3 = State.farming and State.theme.ok or State.theme.sub
+    farmingStatusLabel.Font = Enum.Font.GothamBold
+    farmingStatusLabel.TextSize = 13
+    farmingStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+    farmingStatusLabel.Parent = statusCard
+
+    -- Coins collected
+    local coinCard = card(page, 64)
+    local cTitle = label(coinCard, "Coins Collected", 18, State.theme.text, true)
+    cTitle.Position = UDim2.new(0, 12, 0, 8)
+    coinCounterLabel = Instance.new("TextLabel")
+    coinCounterLabel.Size = UDim2.new(1, -24, 0, 26)
+    coinCounterLabel.Position = UDim2.new(0, 12, 0, 30)
+    coinCounterLabel.BackgroundTransparency = 1
+    coinCounterLabel.Text = tostring(State.coinsCollected)
+    coinCounterLabel.TextColor3 = State.theme.accent
+    coinCounterLabel.Font = Enum.Font.GothamBold
+    coinCounterLabel.TextSize = 22
+    coinCounterLabel.TextXAlignment = Enum.TextXAlignment.Left
+    coinCounterLabel.Parent = coinCard
+
+    -- Bag progress
+    local bagCard = card(page, 82)
+    local bTitle = label(bagCard, "Coin Bag Progress", 18, State.theme.text, true)
+    bTitle.Position = UDim2.new(0, 12, 0, 8)
+
+    bagProgressLabel = Instance.new("TextLabel")
+    bagProgressLabel.Size = UDim2.new(1, -24, 0, 18)
+    bagProgressLabel.Position = UDim2.new(0, 12, 0, 28)
+    bagProgressLabel.BackgroundTransparency = 1
+    bagProgressLabel.Text = string.format("%d / %d", State.coinsCollected, State.bagMax)
+    bagProgressLabel.TextColor3 = State.theme.sub
+    bagProgressLabel.Font = Enum.Font.Gotham
+    bagProgressLabel.TextSize = 12
+    bagProgressLabel.TextXAlignment = Enum.TextXAlignment.Left
+    bagProgressLabel.Parent = bagCard
+
+    local bagTrack = Instance.new("Frame")
+    bagTrack.Size = UDim2.new(1, -24, 0, 8)
+    bagTrack.Position = UDim2.new(0, 12, 0, 52)
+    bagTrack.BackgroundColor3 = State.theme.bg
+    bagTrack.BorderSizePixel = 0
+    bagTrack.Parent = bagCard
+    corner(bagTrack, 4)
+
+    bagFill = Instance.new("Frame")
+    bagFill.Size = UDim2.new(0, 0
