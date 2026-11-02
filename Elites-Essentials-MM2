@@ -811,4 +811,316 @@ do
     corner(bagTrack, 4)
 
     bagFill = Instance.new("Frame")
-    bagFill.Size = UDim2.new(0, 0
+    bagFill.Size = UDim2.new(0, 0, 1, 0)
+    bagFill.BackgroundColor3 = State.theme.accent
+    bagFill.BorderSizePixel = 0
+    bagFill.Parent = bagTrack
+    corner(bagFill, 4)
+
+    local function updateBag()
+        local p = 0
+        if State.bagMax > 0 then
+            p = math.clamp(State.coinsCollected / State.bagMax, 0, 1)
+        end
+        anim(bagFill, { Size = UDim2.new(p, 0, 1, 0) }, 0.2)
+        bagProgressLabel.Text = string.format("%d / %d", State.coinsCollected, State.bagMax)
+    end
+
+    -- Max coin bag
+    numberInputRow(page, "Max Coin Bag", State.bagMax, 1, 10000, function(v)
+        State.bagMax = v
+        updateBag()
+    end)
+
+    -- Auto reset
+    toggleRow(page, "Auto Reset", State.autoReset, function(v)
+        State.autoReset = v
+    end)
+
+    -- Collection delay
+    sliderRow(page, "Collection Delay (s)", 0.05, 1.0, State.delay, 0.05, function(v)
+        State.delay = v
+    end)
+
+    -- Start/Stop
+    local controlCard = card(page, 112)
+    local ctlTitle = label(controlCard, "Controls", 18, State.theme.text, true)
+    ctlTitle.Position = UDim2.new(0, 12, 0, 8)
+
+    farmStartBtn = Instance.new("TextButton")
+    farmStartBtn.Size = UDim2.new(0.5, -18, 0, 40)
+    farmStartBtn.Position = UDim2.new(0, 12, 0, 36)
+    farmStartBtn.BackgroundColor3 = State.theme.ok
+    farmStartBtn.Text = "Start"
+    farmStartBtn.TextColor3 = State.theme.text
+    farmStartBtn.Font = Enum.Font.GothamBold
+    farmStartBtn.TextSize = 14
+    farmStartBtn.AutoButtonColor = true
+    farmStartBtn.Parent = controlCard
+    corner(farmStartBtn, 8)
+
+    farmStopBtn = Instance.new("TextButton")
+    farmStopBtn.Size = UDim2.new(0.5, -18, 0, 40)
+    farmStopBtn.Position = UDim2.new(0.5, 6, 0, 36)
+    farmStopBtn.BackgroundColor3 = State.theme.bad
+    farmStopBtn.Text = "Stop"
+    farmStopBtn.TextColor3 = State.theme.text
+    farmStopBtn.Font = Enum.Font.GothamBold
+    farmStopBtn.TextSize = 14
+    farmStopBtn.AutoButtonColor = true
+    farmStopBtn.Parent = controlCard
+    corner(farmStopBtn, 8)
+
+    local controlHint = Instance.new("TextLabel")
+    controlHint.Size = UDim2.new(1, -24, 0, 18)
+    controlHint.Position = UDim2.new(0, 12, 0, 84)
+    controlHint.BackgroundTransparency = 1
+    controlHint.Text = "Toggle state above must be ON to start."
+    controlHint.TextColor3 = State.theme.sub
+    controlHint.Font = Enum.Font.Gotham
+    controlHint.TextSize = 11
+    controlHint.TextXAlignment = Enum.TextXAlignment.Left
+    controlHint.Parent = controlCard
+
+    -- Reset counter button
+    local resetCard = card(page, 56)
+    local rTitle = label(resetCard, "Reset Counter", 18, State.theme.text, true)
+    rTitle.Position = UDim2.new(0, 12, 0.5, -10)
+
+    local resetBtn = Instance.new("TextButton")
+    resetBtn.Size = UDim2.new(0, 90, 0, 34)
+    resetBtn.Position = UDim2.new(1, -102, 0.5, -17)
+    resetBtn.BackgroundColor3 = State.theme.card
+    resetBtn.Text = "Reset"
+    resetBtn.TextColor3 = State.theme.text
+    resetBtn.Font = Enum.Font.GothamBold
+    resetBtn.TextSize = 13
+    resetBtn.AutoButtonColor = true
+    resetBtn.Parent = resetCard
+    corner(resetBtn, 8)
+    stroke(resetBtn, State.theme.accent, 1)
+
+    resetBtn.MouseButton1Click:Connect(function()
+        State.coinsCollected = 0
+        coinCounterLabel.Text = "0"
+        updateBag()
+    end)
+
+    -- Start / Stop logic (visual only — no gameplay automation)
+    farmStartBtn.MouseButton1Click:Connect(function()
+        if not State.farming then
+            if farmingStatusLabel then
+                farmingStatusLabel.Text = "Enable Coin Farm toggle first"
+                farmingStatusLabel.TextColor3 = State.theme.warn
+            end
+            return
+        end
+        if farmingStatusLabel then
+            farmingStatusLabel.Text = "Running"
+            farmingStatusLabel.TextColor3 = State.theme.ok
+        end
+    end)
+
+    farmStopBtn.MouseButton1Click:Connect(function()
+        State.farming = false
+        if farmingStatusLabel then
+            farmingStatusLabel.Text = "Stopped"
+            farmingStatusLabel.TextColor3 = State.theme.sub
+        end
+    end)
+
+    updateBag()
+end
+
+-- ============================================================
+-- SETTINGS PAGE
+-- ============================================================
+do
+    local page = pages.Settings
+
+    -- UI Scale
+    sliderRow(page, "UI Scale", 0.7, 1.4, State.uiScale, 0.05, function(v)
+        State.uiScale = v
+        scale.Scale = v
+    end)
+
+    -- Theme
+    dropdownRow(page, "Theme", {"Midnight", "Violet", "Ice"}, State.themeName, function(opt)
+        State.themeName = opt
+        State.theme = THEMES[opt]
+        applyTheme()
+    end)
+
+    -- Animations
+    toggleRow(page, "Animations", State.animations, function(v)
+        State.animations = v
+    end)
+
+    -- Save preference note
+    local noteCard = card(page, 64)
+    local nTitle = label(noteCard, "Preferences", 18, State.theme.text, true)
+    nTitle.Position = UDim2.new(0, 12, 0, 10)
+    local nSub = Instance.new("TextLabel")
+    nSub.Size = UDim2.new(1, -24, 0, 18)
+    nSub.Position = UDim2.new(0, 12, 0, 34)
+    nSub.BackgroundTransparency = 1
+    nSub.Text = "Preferences are saved for this session."
+    nSub.TextColor3 = State.theme.sub
+    nSub.Font = Enum.Font.Gotham
+    nSub.TextSize = 12
+    nSub.TextXAlignment = Enum.TextXAlignment.Left
+    nSub.Parent = noteCard
+
+    -- Reset preferences
+    local resetPrefsCard = card(page, 56)
+    local rpTitle = label(resetPrefsCard, "Reset Preferences", 18, State.theme.text, true)
+    rpTitle.Position = UDim2.new(0, 12, 0.5, -10)
+
+    local rpBtn = Instance.new("TextButton")
+    rpBtn.Size = UDim2.new(0, 90, 0, 34)
+    rpBtn.Position = UDim2.new(1, -102, 0.5, -17)
+    rpBtn.BackgroundColor3 = State.theme.card
+    rpBtn.Text = "Reset"
+    rpBtn.TextColor3 = State.theme.text
+    rpBtn.Font = Enum.Font.GothamBold
+    rpBtn.TextSize = 13
+    rpBtn.AutoButtonColor = true
+    rpBtn.Parent = resetPrefsCard
+    corner(rpBtn, 8)
+    stroke(rpBtn, State.theme.bad, 1)
+
+    rpBtn.MouseButton1Click:Connect(function()
+        State.themeName  = "Midnight"
+        State.theme      = THEMES.Midnight
+        State.uiScale    = 1.0
+        State.animations = true
+        scale.Scale = 1.0
+        applyTheme()
+    end)
+end
+
+-- ============================================================
+-- applyTheme — repaints static elements
+-- ============================================================
+function applyTheme()
+    local t = State.theme
+
+    -- FAB
+    fab.BackgroundColor3 = t.accent
+    fab.TextColor3 = t.text
+    for _, s in ipairs(fab:GetChildren()) do
+        if s:IsA("UIStroke") then s.Color = t.accent2 end
+    end
+
+    -- Panel
+    panel.BackgroundColor3 = t.panel
+    for _, s in ipairs(panel:GetChildren()) do
+        if s:IsA("UIStroke") then s.Color = t.stroke end
+    end
+
+    -- Header
+    header.BackgroundColor3 = t.bg
+    headerFiller.BackgroundColor3 = t.bg
+    headerTitle.TextColor3 = t.text
+    headerStatus.TextColor3 = t.sub
+    headerDot.BackgroundColor3 = State.farming and t.ok or t.ok
+    closeBtn.BackgroundColor3 = t.card
+    closeBtn.TextColor3 = t.text
+
+    -- Tab bar
+    tabBar.BackgroundColor3 = t.card
+    for name, btn in pairs(tabButtons) do
+        if State.tab == name then
+            btn.BackgroundColor3 = t.accent
+        else
+            btn.BackgroundColor3 = t.panel
+        end
+        btn.TextColor3 = t.text
+    end
+
+    -- Scrollbars
+    for _, p in pairs(pages) do
+        p.ScrollBarImageColor3 = t.accent
+    end
+
+    -- Walking the tree and recoloring cards/labels consistently
+    local function recolor(inst)
+        for _, child in ipairs(inst:GetDescendants()) do
+            if child:IsA("Frame") and (child.Name == "Divider") then
+                child.BackgroundColor3 = t.stroke
+            end
+            if child:IsA("UIStroke") then
+                if child.Parent and child.Parent.Name == "Toggle" then
+                    child.Color = t.accent2
+                else
+                    child.Color = t.stroke
+                end
+            end
+        end
+    end
+    recolor(panel)
+end
+
+-- ============================================================
+-- DRAG (panel)
+-- ============================================================
+do
+    local dragging = false
+    local dragStart, startPos
+
+    local function isButton(target)
+        return target and (target:IsA("TextButton") or target:IsA("TextBox"))
+    end
+
+    header.InputBegan:Connect(function(input)
+        local t = input.UserInputType
+        if t ~= Enum.UserInputType.Touch and t ~= Enum.UserInputType.MouseButton1 then return end
+        if isButton(input.Target) then return end
+        dragging = true
+        dragStart = input.Position
+        startPos = panel.Position
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if not dragging then return end
+        local t = input.UserInputType
+        if t ~= Enum.UserInputType.Touch and t ~= Enum.UserInputType.MouseMovement then return end
+        local d = input.Position - dragStart
+        panel.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + d.X,
+            startPos.Y.Scale, startPos.Y.Offset + d.Y
+        )
+    end)
+
+    UserInputService.InputEnded:Connect(function(input)
+        local t = input.UserInputType
+        if t == Enum.UserInputType.Touch or t == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end)
+end
+
+-- ============================================================
+-- OPEN / CLOSE
+-- ============================================================
+fab.MouseButton1Click:Connect(function()
+    panel.Visible = not panel.Visible
+end)
+
+closeBtn.MouseButton1Click:Connect(function()
+    panel.Visible = false
+end)
+
+-- ============================================================
+-- SELF-HEAL WATCHDOG
+-- ============================================================
+task.spawn(function()
+    while gui.Parent do
+        task.wait(1.5)
+        if not gui.Parent then
+            local target = player:FindFirstChildOfClass("PlayerGui") or game:GetService("CoreGui")
+            if target then pcall(function() gui.Parent = target end) end
+        end
+        if not gui.Enabled then gui.Enabled = true end
+    end
+end)
