@@ -1,0 +1,1894 @@
+--[[
+ELITES SYSTEMS v0.1.0 - ONE-FILE STUDIO INSTALLER
+
+HOW TO USE:
+1. Open your own Roblox experience in Roblox Studio (edit mode, not Play mode).
+2. Open the Command Bar (View > Command Bar, or Ctrl+9 on Windows).
+3. Paste this entire file into the Command Bar and run it once.
+4. The installer creates the required server, shared, and client scripts.
+5. Press Play to test. See comments in Config for customization.
+
+IMPORTANT:
+- This is a Studio Command Bar installer, NOT a Script/LocalScript to insert into the game.
+- Roblox separates server and client execution for security. This one file installs the
+  required Scripts/LocalScripts/ModuleScripts into their proper services automatically.
+- Existing folders named "ElitesSystems" in the three target locations are replaced.
+  Back up any edits you made inside those folders before running this installer.
+- No loadstring, executor, or external code download is used.
+]]
+
+local DESTINATIONS = {
+    { Service = game:GetService("ReplicatedStorage"), Label = "ReplicatedStorage" },
+    { Service = game:GetService("ServerScriptService"), Label = "ServerScriptService" },
+    { Service = game:GetService("StarterPlayer"):WaitForChild("StarterPlayerScripts"), Label = "StarterPlayer.StarterPlayerScripts" },
+}
+
+local ROOT_NAME = "ElitesSystems"
+local installedCount = 0
+
+-- Replace only this project's exact root folders in the known target locations.
+for _, destination in ipairs(DESTINATIONS) do
+    local existing = destination.Service:FindFirstChild(ROOT_NAME)
+    if existing then
+        existing:Destroy()
+        print("[Elites Systems] Replaced existing folder in " .. destination.Label)
+    end
+end
+
+local function getOrCreateFolder(parent, name)
+    local folder = parent:FindFirstChild(name)
+    if folder and not folder:IsA("Folder") then
+        folder:Destroy()
+        folder = nil
+    end
+    if not folder then
+        folder = Instance.new("Folder")
+        folder.Name = name
+        folder.Parent = parent
+    end
+    return folder
+end
+
+local function resolveService(serviceName)
+    if serviceName == "StarterPlayer" then
+        return game:GetService("StarterPlayer"):WaitForChild("StarterPlayerScripts")
+    end
+    return game:GetService(serviceName)
+end
+
+local function installEntry(entry)
+    local parent = resolveService(entry.Service)
+    for _, folderName in ipairs(entry.Folders) do
+        parent = getOrCreateFolder(parent, folderName)
+    end
+
+    local old = parent:FindFirstChild(entry.Name)
+    if old then old:Destroy() end
+
+    local object = Instance.new(entry.ClassName)
+    object.Name = entry.Name
+    object.Source = entry.Source
+    if object:IsA("BaseScript") then
+        object.Disabled = false
+    end
+    object.Parent = parent
+    installedCount += 1
+end
+
+local FILES = {
+    { Service = "ReplicatedStorage", Folders = {"ElitesSystems", "Shared"}, Name = "Config", ClassName = "ModuleScript", Source = [====[
+-- Elites Systems | Shared configuration
+-- Change these values for your own experience. Server-side values remain authoritative.
+
+local Config = {}
+
+Config.Version = "0.1.0"
+Config.DataStoreName = "ElitesSystems_PlayerData_v1"
+Config.RemoteFolderName = "Remotes"
+Config.AllowRoleInspectionInStudio = true
+Config.AutoAssignTestRoles = true
+
+-- Add your Roblox UserId(s) here to enable developer-only role inspection.
+-- Example: Config.AdminUserIds = { 123456789 }
+Config.AdminUserIds = { 0 }
+
+Config.Theme = {
+    Background = Color3.fromRGB(12, 10, 18),
+    Panel = Color3.fromRGB(20, 16, 30),
+    PanelRaised = Color3.fromRGB(30, 23, 44),
+    Purple = Color3.fromRGB(151, 87, 255),
+    PurpleDark = Color3.fromRGB(93, 48, 163),
+    Text = Color3.fromRGB(245, 240, 255),
+    Muted = Color3.fromRGB(164, 151, 184),
+    Green = Color3.fromRGB(91, 220, 151),
+    Red = Color3.fromRGB(255, 95, 120),
+    Gold = Color3.fromRGB(255, 205, 94),
+}
+
+Config.Movement = {
+    WalkSpeed = 16,
+    SprintSpeed = 20,
+    JumpPresets = {
+        Normal = 50,
+        Float = 60,
+        Heavy = 42,
+    },
+    DefaultJumpPreset = "Normal",
+}
+
+Config.Weapons = {
+    TrainingPistol = {
+        DisplayName = "Training Pistol",
+        Cooldown = 0.32,
+        Range = 350,
+        TorsoDamageMin = 1,
+        TorsoDamageMax = 6,
+        OtherDamage = 2,
+    },
+}
+
+Config.DefaultSettings = {
+    RecoilEnabled = true,
+    AimBreatherEnabled = true,
+    CrosshairEnabled = true,
+    PlayerFramesEnabled = false,
+    RadarEnabled = false,
+    StatViewerEnabled = false,
+    BoulderAssistEnabled = false,
+    Language = "en",
+}
+
+Config.SavedBooleanSettings = {
+    RecoilEnabled = true,
+    AimBreatherEnabled = true,
+    CrosshairEnabled = true,
+    PlayerFramesEnabled = true,
+    RadarEnabled = true,
+    StatViewerEnabled = true,
+    BoulderAssistEnabled = true,
+}
+
+Config.Roles = { "Murderer", "Sheriff", "Innocent" }
+Config.WitnessDistance = 90
+Config.PickupTag = "GoldPickup"
+Config.BoulderTag = "Boulder"
+
+return Config
+
+]====] }, -- ReplicatedStorage/ElitesSystems/Shared/Config.lua
+    { Service = "ReplicatedStorage", Folders = {"ElitesSystems", "Shared"}, Name = "ConnectionManager", ClassName = "ModuleScript", Source = [====[
+-- Connection manager used by client controllers to track/disconnect event listeners.
+-- Callback failures are reported instead of silently killing a controller's event flow.
+local ConnectionManager = {}
+ConnectionManager.__index = ConnectionManager
+
+function ConnectionManager.new(label)
+    return setmetatable({ Label = label or "ConnectionManager", Connections = {} }, ConnectionManager)
+end
+
+function ConnectionManager:Connect(signal, callback)
+    assert(signal and typeof(callback) == "function", "Connect expects a signal and callback")
+    local connection = signal:Connect(function(...)
+        local arguments = table.pack(...)
+        local ok, err = pcall(function()
+            callback(table.unpack(arguments, 1, arguments.n))
+        end)
+        if not ok then
+            warn(string.format("[ElitesSystems:%s] Event callback failed: %s", self.Label, tostring(err)))
+        end
+    end)
+    table.insert(self.Connections, connection)
+    return connection
+end
+
+function ConnectionManager:Track(connection)
+    if connection then table.insert(self.Connections, connection) end
+    return connection
+end
+
+function ConnectionManager:DisconnectAll()
+    for index = #self.Connections, 1, -1 do
+        local connection = self.Connections[index]
+        if connection and connection.Connected then
+            connection:Disconnect()
+        end
+        self.Connections[index] = nil
+    end
+end
+
+return ConnectionManager
+
+]====] }, -- ReplicatedStorage/ElitesSystems/Shared/ConnectionManager.lua
+    { Service = "ReplicatedStorage", Folders = {"ElitesSystems", "Shared"}, Name = "FeatureCatalog", ClassName = "ModuleScript", Source = [====[
+-- Registry for the requested modules and their initial implementation status.
+-- "adapted" means the feature is intentionally implemented as a fair, server-owned game mechanic.
+
+return {
+    { name = "Recoil Resolved", category = "Combat", status = "implemented", note = "Local camera recoil feedback with decay." },
+    { name = "Smart Synapse", category = "Combat", status = "adapted", note = "Camera stability/smoothing; no automatic target lock." },
+    { name = "AimBreather Logic", category = "Combat", status = "implemented", note = "Reduces camera movement for a steadier view." },
+    { name = "Data Hit-Trace", category = "Combat", status = "implemented", note = "Server raycast, torso hit classification and 1-6 damage roll." },
+    { name = "Gun State Tracker", category = "Combat", status = "extension", note = "Reserved for a game-specific Tool/viewmodel setup." },
+    { name = "Weapon Heat", category = "Combat", status = "implemented", note = "Server-enforced weapon cooldown." },
+    { name = "Velocity Control", category = "Movement", status = "implemented", note = "Server-owned walk and sprint speed limits." },
+    { name = "Silent Walker", category = "Movement", status = "extension", note = "Requires the experience's chosen animation assets." },
+    { name = "Boulder Logic", category = "Movement", status = "adapted", note = "Local obstacle detection toggle; tag boulders with the configured CollectionService tag." },
+    { name = "Runback Router", category = "Movement", status = "adapted", note = "Sprint is symmetric; no backwards speed exploit." },
+    { name = "Position Lure", category = "Movement", status = "adapted", note = "Reserved for a server-authorized step/obstacle assist, not hitbox desynchronization." },
+    { name = "Gravity Override", category = "Movement", status = "implemented", note = "Server-selected jump presets." },
+    { name = "Identity Decoder", category = "Identification", status = "implemented", note = "Role labels only for configured developers/testers." },
+    { name = "Target Insight", category = "Identification", status = "extension", note = "Reads an EyesOpen character attribute when the game supplies it." },
+    { name = "Phantom Frame", category = "Identification", status = "implemented", note = "Occluded-only character outlines; no through-wall reveal." },
+    { name = "Radar Immersion", category = "Identification", status = "adapted", note = "Developer/test radar; role-sensitive data is permission-gated." },
+    { name = "Stat Viewer", category = "Identification", status = "implemented", note = "Overhead health/level display." },
+    { name = "Witness Tracker", category = "Identification", status = "implemented", note = "Server marks nearby players with line of sight to a hit event." },
+    { name = "Notification Hub", category = "Interface", status = "implemented", note = "On-screen notifications." },
+    { name = "Crosshair Controller", category = "Interface", status = "implemented", note = "Toggleable purple crosshair." },
+    { name = "Sound Design", category = "Interface", status = "extension", note = "Hook point for your licensed/owned sound assets." },
+    { name = "Menu Visuals", category = "Interface", status = "implemented", note = "Black/purple animated interface." },
+    { name = "Rank Display", category = "Interface", status = "implemented", note = "Top HUD with kills and player stats." },
+    { name = "Flux Connector", category = "Interface", status = "implemented", note = "Shared theme configuration." },
+    { name = "Session Refresher", category = "Persistence", status = "adapted", note = "Uses Roblox's normal respawn flow plus a server-validated respawn request." },
+    { name = "Inventory Dump", category = "Persistence", status = "implemented", note = "Server-side tagged gold pickups." },
+    { name = "Hotfix Service", category = "Persistence", status = "implemented", note = "Protected module startup and tracked connections." },
+    { name = "Language Loader", category = "Persistence", status = "implemented", note = "English and Spanish localization starter." },
+    { name = "Config Storage", category = "Persistence", status = "implemented", note = "Validated preferences saved through DataStoreService." },
+    { name = "Bookkeeper", category = "Persistence", status = "implemented", note = "Persistent kills, deaths and gold statistics." },
+}
+
+]====] }, -- ReplicatedStorage/ElitesSystems/Shared/FeatureCatalog.lua
+    { Service = "ReplicatedStorage", Folders = {"ElitesSystems", "Shared"}, Name = "Localization", ClassName = "ModuleScript", Source = [====[
+-- Small built-in localization table. Add keys/languages here as the interface grows.
+local Localization = {}
+
+local dictionaries = {
+    en = {
+        overview = "Overview", combat = "Combat", movement = "Movement",
+        visuals = "Visuals", settings = "Settings", kills = "Kills",
+        deaths = "Deaths", gold = "Gold", status = "SYSTEM STATUS",
+        ready = "All core services are running.", recoil = "Recoil Resolved",
+        breather = "AimBreather Logic", crosshair = "Crosshair Controller",
+        sprint = "Sprint / Velocity Control", jump = "Gravity Override",
+        frames = "Phantom Frame", radar = "Radar Immersion",
+        identity = "Identity Decoder", stats = "Stat Viewer",
+        boulder = "Boulder Logic", language = "Language",
+        respawn = "Request Respawn", devOnly = "Developer permission required",
+        enabled = "Enabled", disabled = "Disabled", normal = "Normal",
+        float = "Float", heavy = "Heavy", english = "English", spanish = "Español",
+    },
+    es = {
+        overview = "Resumen", combat = "Combate", movement = "Movimiento",
+        visuals = "Visuales", settings = "Ajustes", kills = "Eliminaciones",
+        deaths = "Derrotas", gold = "Oro", status = "ESTADO DEL SISTEMA",
+        ready = "Todos los servicios principales están activos.", recoil = "Control de retroceso",
+        breather = "Estabilidad de cámara", crosshair = "Punto de mira",
+        sprint = "Carrera / Velocidad", jump = "Gravedad y salto",
+        frames = "Resaltado de jugadores", radar = "Radar",
+        identity = "Identificación de roles", stats = "Estadísticas",
+        boulder = "Asistencia de obstáculos", language = "Idioma",
+        respawn = "Solicitar reaparición", devOnly = "Se requiere permiso de desarrollador",
+        enabled = "Activado", disabled = "Desactivado", normal = "Normal",
+        float = "Flotante", heavy = "Pesado", english = "English", spanish = "Español",
+    },
+}
+
+function Localization.Get(key, language)
+    local selected = dictionaries[language] or dictionaries.en
+    return selected[key] or dictionaries.en[key] or key
+end
+
+function Localization.GetLanguages()
+    return { "en", "es" }
+end
+
+return Localization
+
+]====] }, -- ReplicatedStorage/ElitesSystems/Shared/Localization.lua
+    { Service = "ServerScriptService", Folders = {"ElitesSystems", "Services"}, Name = "DataService", ClassName = "ModuleScript", Source = [====[
+local Players = game:GetService("Players")
+local DataStoreService = game:GetService("DataStoreService")
+
+local DataService = {}
+local context
+local store
+local cache = {}
+local saveScheduled = {}
+local pendingStats = {}
+
+local STAT_KEYS = { Kills = true, Deaths = true, Gold = true }
+
+local function makeDefaultData(Config)
+    local settings = {}
+    for key, value in pairs(Config.DefaultSettings) do
+        settings[key] = value
+    end
+    return {
+        Version = 1,
+        Stats = { Kills = 0, Deaths = 0, Gold = 0 },
+        Settings = settings,
+    }
+end
+
+local function sanitizeData(raw, Config)
+    local data = makeDefaultData(Config)
+    if type(raw) ~= "table" then
+        return data
+    end
+
+    if type(raw.Stats) == "table" then
+        for key in pairs(STAT_KEYS) do
+            local value = tonumber(raw.Stats[key])
+            if value then
+                data.Stats[key] = math.clamp(math.floor(value), 0, 1000000000)
+            end
+        end
+    end
+
+    if type(raw.Settings) == "table" then
+        for key in pairs(Config.SavedBooleanSettings) do
+            if type(raw.Settings[key]) == "boolean" then
+                data.Settings[key] = raw.Settings[key]
+            end
+        end
+        if raw.Settings.Language == "en" or raw.Settings.Language == "es" then
+            data.Settings.Language = raw.Settings.Language
+        end
+    end
+    return data
+end
+
+local function setLeaderstat(player, name, value)
+    local leaderstats = player:FindFirstChild("leaderstats")
+    if not leaderstats then
+        leaderstats = Instance.new("Folder")
+        leaderstats.Name = "leaderstats"
+        leaderstats.Parent = player
+    end
+    local stat = leaderstats:FindFirstChild(name)
+    if not stat then
+        stat = Instance.new("IntValue")
+        stat.Name = name
+        stat.Parent = leaderstats
+    end
+    stat.Value = value
+end
+
+local function publish(player)
+    local data = cache[player]
+    if not data then return end
+    for key, value in pairs(data.Stats) do
+        player:SetAttribute(key, value)
+        setLeaderstat(player, key, value)
+    end
+    player:SetAttribute("DataLoaded", true)
+end
+
+function DataService.Get(player)
+    return cache[player]
+end
+
+function DataService.GetSnapshot(player)
+    local data = cache[player]
+    if not data then
+        return { Stats = { Kills = 0, Deaths = 0, Gold = 0 }, Settings = {} }
+    end
+    local stats = table.clone(data.Stats)
+    local settings = table.clone(data.Settings)
+    return { Stats = stats, Settings = settings }
+end
+
+function DataService.AddStat(player, key, amount)
+    if not STAT_KEYS[key] or not player or player.Parent ~= Players then return end
+    amount = math.floor(tonumber(amount) or 0)
+    if not cache[player] then
+        pendingStats[player] = pendingStats[player] or {}
+        pendingStats[player][key] = (pendingStats[player][key] or 0) + amount
+        return
+    end
+    cache[player].Stats[key] = math.clamp((cache[player].Stats[key] or 0) + amount, 0, 1000000000)
+    player:SetAttribute(key, cache[player].Stats[key])
+    setLeaderstat(player, key, cache[player].Stats[key])
+    DataService.ScheduleSave(player)
+end
+
+function DataService.SavePreference(player, key, value)
+    if not cache[player] then return false end
+    if context.Config.SavedBooleanSettings[key] then
+        if type(value) ~= "boolean" then return false end
+    elseif key == "Language" then
+        if value ~= "en" and value ~= "es" then return false end
+    else
+        return false
+    end
+    cache[player].Settings[key] = value
+    DataService.ScheduleSave(player)
+    return true
+end
+
+function DataService.ScheduleSave(player)
+    if saveScheduled[player] then return end
+    saveScheduled[player] = true
+    task.delay(8, function()
+        saveScheduled[player] = nil
+        if player.Parent == Players then
+            DataService.Save(player)
+        end
+    end)
+end
+
+function DataService.Save(player)
+    local data = cache[player]
+    if not data or not store then return false end
+    local payload = {
+        Version = 1,
+        Stats = table.clone(data.Stats),
+        Settings = table.clone(data.Settings),
+    }
+    local ok, err = pcall(function()
+        store:UpdateAsync("u_" .. tostring(player.UserId), function()
+            return payload
+        end)
+    end)
+    if not ok then
+        warn("[ElitesSystems] Could not save " .. player.Name .. ": " .. tostring(err))
+    end
+    return ok
+end
+
+local function loadPlayer(player)
+    if cache[player] then return end
+    local raw
+    local ok, err = pcall(function()
+        raw = store:GetAsync("u_" .. tostring(player.UserId))
+    end)
+    if not ok then
+        warn("[ElitesSystems] Data load failed for " .. player.Name .. "; using defaults: " .. tostring(err))
+    end
+    if player.Parent ~= Players then return end
+    cache[player] = sanitizeData(raw, context.Config)
+    local queued = pendingStats[player]
+    if queued then
+        for key, amount in pairs(queued) do
+            if STAT_KEYS[key] then
+                cache[player].Stats[key] = math.clamp(cache[player].Stats[key] + amount, 0, 1000000000)
+            end
+        end
+        pendingStats[player] = nil
+    end
+    publish(player)
+end
+
+function DataService.Init(ctx)
+    context = ctx
+    store = DataStoreService:GetDataStore(context.Config.DataStoreName)
+
+    Players.PlayerAdded:Connect(function(player)
+        loadPlayer(player)
+    end)
+    for _, player in ipairs(Players:GetPlayers()) do
+        task.spawn(loadPlayer, player)
+    end
+
+    Players.PlayerRemoving:Connect(function(player)
+        DataService.Save(player)
+        cache[player] = nil
+        saveScheduled[player] = nil
+        pendingStats[player] = nil
+    end)
+
+    game:BindToClose(function()
+        for _, player in ipairs(Players:GetPlayers()) do
+            DataService.Save(player)
+        end
+    end)
+end
+
+return DataService
+
+]====] }, -- ServerScriptService/ElitesSystems/Services/DataService.lua
+    { Service = "ServerScriptService", Folders = {"ElitesSystems", "Services"}, Name = "MovementService", ClassName = "ModuleScript", Source = [====[
+local Players = game:GetService("Players")
+
+local MovementService = {}
+local context
+local sprintByPlayer = {}
+local jumpPresetByPlayer = {}
+
+local function getExpectedSpeed(player)
+    if sprintByPlayer[player] then
+        return context.Config.Movement.SprintSpeed
+    end
+    return context.Config.Movement.WalkSpeed
+end
+
+local function applyCharacter(player, character)
+    local humanoid = character:WaitForChild("Humanoid", 10)
+    if not humanoid then return end
+    humanoid.UseJumpPower = true
+    humanoid.WalkSpeed = getExpectedSpeed(player)
+    local preset = jumpPresetByPlayer[player] or context.Config.Movement.DefaultJumpPreset
+    humanoid.JumpPower = context.Config.Movement.JumpPresets[preset] or 50
+
+    humanoid:GetPropertyChangedSignal("JumpPower"):Connect(function()
+        if not humanoid.Parent then return end
+        local expected = context.Config.Movement.JumpPresets[jumpPresetByPlayer[player] or context.Config.Movement.DefaultJumpPreset] or 50
+        if math.abs(humanoid.JumpPower - expected) > 0.05 then
+            humanoid.JumpPower = expected
+        end
+    end)
+
+    humanoid:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
+        if not humanoid.Parent then return end
+        local expected = getExpectedSpeed(player)
+        if math.abs(humanoid.WalkSpeed - expected) > 0.05 then
+            humanoid.WalkSpeed = expected
+        end
+    end)
+end
+
+local function setSprint(player, enabled)
+    if type(enabled) ~= "boolean" then return end
+    sprintByPlayer[player] = enabled
+    player:SetAttribute("SprintEnabled", enabled)
+    local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+    if humanoid then humanoid.WalkSpeed = getExpectedSpeed(player) end
+end
+
+local function setJumpPreset(player, preset)
+    if type(preset) ~= "string" or not context.Config.Movement.JumpPresets[preset] then return end
+    jumpPresetByPlayer[player] = preset
+    player:SetAttribute("JumpPreset", preset)
+    local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+    if humanoid then humanoid.JumpPower = context.Config.Movement.JumpPresets[preset] end
+end
+
+function MovementService.Init(ctx)
+    context = ctx
+    local function setup(player)
+        sprintByPlayer[player] = false
+        jumpPresetByPlayer[player] = context.Config.Movement.DefaultJumpPreset
+        player.CharacterAdded:Connect(function(character)
+            applyCharacter(player, character)
+        end)
+        if player.Character then task.spawn(applyCharacter, player, player.Character) end
+    end
+
+    Players.PlayerAdded:Connect(setup)
+    for _, player in ipairs(Players:GetPlayers()) do setup(player) end
+    Players.PlayerRemoving:Connect(function(player)
+        sprintByPlayer[player] = nil
+        jumpPresetByPlayer[player] = nil
+    end)
+
+    context.Remotes.Action.OnServerEvent:Connect(function(player, action, payload)
+        if action == "SetSprint" and type(payload) == "table" then
+            setSprint(player, payload.Enabled)
+        elseif action == "SetJumpPreset" and type(payload) == "table" then
+            setJumpPreset(player, payload.Preset)
+        end
+    end)
+end
+
+return MovementService
+
+]====] }, -- ServerScriptService/ElitesSystems/Services/MovementService.lua
+    { Service = "ServerScriptService", Folders = {"ElitesSystems", "Services"}, Name = "PickupService", ClassName = "ModuleScript", Source = [====[
+local Players = game:GetService("Players")
+local CollectionService = game:GetService("CollectionService")
+
+local PickupService = {}
+local context
+local connected = {}
+
+local function getPromptParent(instance)
+    if instance:IsA("BasePart") then return instance end
+    if instance:IsA("Model") then
+        return instance.PrimaryPart or instance:FindFirstChildWhichIsA("BasePart", true)
+    end
+    return nil
+end
+
+local function attachPickup(instance)
+    if connected[instance] then return end
+    local part = getPromptParent(instance)
+    if not part then
+        warn("[ElitesSystems] GoldPickup needs a BasePart or a Model containing one:", instance:GetFullName())
+        return
+    end
+    connected[instance] = true
+
+    local prompt = part:FindFirstChild("ElitesGoldPrompt")
+    if not prompt then
+        prompt = Instance.new("ProximityPrompt")
+        prompt.Name = "ElitesGoldPrompt"
+        prompt.ActionText = "Collect"
+        prompt.ObjectText = "Gold"
+        prompt.KeyboardKeyCode = Enum.KeyCode.E
+        prompt.GamepadKeyCode = Enum.KeyCode.ButtonX
+        prompt.HoldDuration = 0
+        prompt.MaxActivationDistance = 10
+        prompt.RequiresLineOfSight = true
+        prompt.Parent = part
+    end
+
+    prompt.Triggered:Connect(function(player)
+        if instance:GetAttribute("Collected") then return end
+        local character = player.Character
+        local root = character and character:FindFirstChild("HumanoidRootPart")
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        if not root or not humanoid or humanoid.Health <= 0 then return end
+        if (root.Position - part.Position).Magnitude > prompt.MaxActivationDistance + 3 then return end
+
+        instance:SetAttribute("Collected", true)
+        prompt.Enabled = false
+        local amount = math.clamp(math.floor(tonumber(instance:GetAttribute("GoldValue")) or 1), 1, 1000)
+        context.DataService.AddStat(player, "Gold", amount)
+        context.Notify(player, "+" .. tostring(amount) .. " Gold", "Success")
+        instance:Destroy()
+    end)
+end
+
+function PickupService.Init(ctx)
+    context = ctx
+    for _, item in ipairs(CollectionService:GetTagged(context.Config.PickupTag)) do
+        attachPickup(item)
+    end
+    CollectionService:GetInstanceAddedSignal(context.Config.PickupTag):Connect(attachPickup)
+    CollectionService:GetInstanceRemovedSignal(context.Config.PickupTag):Connect(function(instance)
+        connected[instance] = nil
+    end)
+end
+
+return PickupService
+
+]====] }, -- ServerScriptService/ElitesSystems/Services/PickupService.lua
+    { Service = "ServerScriptService", Folders = {"ElitesSystems", "Services"}, Name = "RoleService", ClassName = "ModuleScript", Source = [====[
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+
+local RoleService = {}
+local context
+local roles = {}
+local roundActive = false
+
+local function isAdmin(player)
+    if not player then return false end
+    if player:GetAttribute("CanInspectRoles") == true then return true end
+    if RunService:IsStudio() and context.Config.AllowRoleInspectionInStudio then return true end
+    for _, userId in ipairs(context.Config.AdminUserIds) do
+        if userId ~= 0 and player.UserId == userId then return true end
+    end
+    return false
+end
+
+function RoleService.CanInspect(player)
+    return isAdmin(player)
+end
+
+function RoleService.GetRole(player)
+    return player and roles[player.UserId] or nil
+end
+
+function RoleService.SetRole(player, role)
+    if not player or not table.find(context.Config.Roles, role) then return false end
+    roles[player.UserId] = role
+    RoleService.BroadcastInspectorSnapshots()
+    return true
+end
+
+function RoleService.GetSnapshot(viewer)
+    local result = {
+        RoleInspectionAllowed = isAdmin(viewer),
+        OwnRole = roles[viewer.UserId],
+        Roles = {},
+    }
+    if result.RoleInspectionAllowed then
+        for userId, role in pairs(roles) do
+            result.Roles[tostring(userId)] = role
+        end
+    end
+    return result
+end
+
+function RoleService.BroadcastInspectorSnapshots()
+    for _, player in ipairs(Players:GetPlayers()) do
+        if isAdmin(player) then
+            context.Remotes.Push:FireClient(player, "RoleSnapshot", RoleService.GetSnapshot(player))
+        end
+    end
+end
+
+function RoleService.AssignTestRoles()
+    local list = Players:GetPlayers()
+    if #list < 2 then return end
+    -- This is a basic round-test assignment. Replace it with your own round manager as needed.
+    local shuffled = table.clone(list)
+    for index = #shuffled, 2, -1 do
+        local swapIndex = math.random(1, index)
+        shuffled[index], shuffled[swapIndex] = shuffled[swapIndex], shuffled[index]
+    end
+    for index, player in ipairs(shuffled) do
+        player:SetAttribute("WitnessedEvent", false)
+        if index == 1 then
+            roles[player.UserId] = "Murderer"
+        elseif index == 2 then
+            roles[player.UserId] = "Sheriff"
+        else
+            roles[player.UserId] = "Innocent"
+        end
+    end
+    roundActive = true
+    RoleService.BroadcastInspectorSnapshots()
+    for _, player in ipairs(list) do
+        context.Remotes.Push:FireClient(player, "OwnRole", { Role = roles[player.UserId] })
+        context.Notify(player, "Your test-round role has been assigned.", "Info")
+    end
+end
+
+function RoleService.MarkWitnesses(position, excludedPlayer)
+    if typeof(position) ~= "Vector3" then return end
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= excludedPlayer then
+            local character = player.Character
+            local head = character and character:FindFirstChild("Head")
+            local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+            if head and humanoid and humanoid.Health > 0 then
+                local offset = position - head.Position
+                if offset.Magnitude <= context.Config.WitnessDistance then
+                    local params = RaycastParams.new()
+                    params.FilterType = Enum.RaycastFilterType.Exclude
+                    params.FilterDescendantsInstances = { character }
+                    local obstruction = Workspace:Raycast(head.Position, offset, params)
+                    -- A ray that reaches the victim near the event position still counts as line of sight.
+                    local clearPath = not obstruction or (obstruction.Position - position).Magnitude <= 4
+                    if clearPath then
+                        player:SetAttribute("WitnessedEvent", true)
+                        context.Notify(player, "You witnessed a combat event.", "Warning")
+                    end
+                end
+            end
+        end
+    end
+end
+
+function RoleService.Init(ctx)
+    context = ctx
+    Players.PlayerAdded:Connect(function(player)
+        roles[player.UserId] = "Innocent"
+        if context.Config.AutoAssignTestRoles then
+            task.delay(4, function()
+                if not roundActive and #Players:GetPlayers() >= 2 then
+                    RoleService.AssignTestRoles()
+                end
+            end)
+        end
+    end)
+    Players.PlayerRemoving:Connect(function(player)
+        roles[player.UserId] = nil
+        -- PlayerRemoving fires before the departing player is fully removed.
+        if #Players:GetPlayers() <= 3 then
+            roundActive = false
+            task.delay(1, function()
+                if context.Config.AutoAssignTestRoles and not roundActive and #Players:GetPlayers() >= 2 then
+                    RoleService.AssignTestRoles()
+                end
+            end)
+        end
+        RoleService.BroadcastInspectorSnapshots()
+    end)
+    for _, player in ipairs(Players:GetPlayers()) do
+        roles[player.UserId] = roles[player.UserId] or "Innocent"
+    end
+    if context.Config.AutoAssignTestRoles and #Players:GetPlayers() >= 2 then
+        task.delay(4, function()
+            if not roundActive and #Players:GetPlayers() >= 2 then
+                RoleService.AssignTestRoles()
+            end
+        end)
+    end
+end
+
+return RoleService
+
+]====] }, -- ServerScriptService/ElitesSystems/Services/RoleService.lua
+    { Service = "ServerScriptService", Folders = {"ElitesSystems", "Services"}, Name = "WeaponService", ClassName = "ModuleScript", Source = [====[
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+
+local WeaponService = {}
+local context
+local lastShotAt = {}
+local trackedHumanoids = {}
+local lastDamager = {}
+
+local function isFiniteVector3(value)
+    return typeof(value) == "Vector3"
+        and value.X == value.X and value.Y == value.Y and value.Z == value.Z
+        and math.abs(value.X) < 10000 and math.abs(value.Y) < 10000 and math.abs(value.Z) < 10000
+end
+
+local function getHumanoidFromHit(instance)
+    local model = instance and instance:FindFirstAncestorOfClass("Model")
+    if not model then return nil, nil end
+    return model:FindFirstChildOfClass("Humanoid"), model
+end
+
+local function trackHumanoid(humanoid, model)
+    if trackedHumanoids[humanoid] then return end
+    trackedHumanoids[humanoid] = true
+    humanoid.Died:Connect(function()
+        local victim = Players:GetPlayerFromCharacter(model)
+        if victim then
+            context.DataService.AddStat(victim, "Deaths", 1)
+        end
+        local attacker = lastDamager[humanoid]
+        if attacker and attacker.Parent == Players and attacker ~= victim then
+            context.DataService.AddStat(attacker, "Kills", 1)
+        end
+        local root = model:FindFirstChild("HumanoidRootPart")
+        if root then
+            context.RoleService.MarkWitnesses(root.Position, attacker)
+        end
+        lastDamager[humanoid] = nil
+    end)
+end
+
+local function fire(player, direction)
+    if not isFiniteVector3(direction) then return end
+    local now = os.clock()
+    local weapon = context.Config.Weapons.TrainingPistol
+    local previous = lastShotAt[player] or 0
+    if now - previous < weapon.Cooldown then return end
+    lastShotAt[player] = now
+
+    if player:GetAttribute("EquippedWeapon") ~= "TrainingPistol" then return end
+    local character = player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local head = character and character:FindFirstChild("Head")
+    if not character or not humanoid or humanoid.Health <= 0 or not head then return end
+
+    local magnitude = direction.Magnitude
+    if magnitude < 0.9 or magnitude > 1.1 then return end
+    local unitDirection = direction.Unit
+
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = { character }
+    params.IgnoreWater = true
+
+    local result = Workspace:Raycast(head.Position, unitDirection * weapon.Range, params)
+    context.Remotes.Push:FireClient(player, "WeaponFired", { Weapon = "TrainingPistol" })
+    if not result then return end
+
+    local targetHumanoid, targetModel = getHumanoidFromHit(result.Instance)
+    if not targetHumanoid or targetHumanoid.Health <= 0 then return end
+    if targetModel == character then return end
+
+    local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
+    if targetPlayer and player.Team ~= nil and targetPlayer.Team == player.Team then
+        return
+    end
+
+    local partName = result.Instance.Name
+    local isTorso = partName == "Torso" or partName == "UpperTorso" or partName == "LowerTorso"
+    local damage = isTorso
+        and math.random(weapon.TorsoDamageMin, weapon.TorsoDamageMax)
+        or weapon.OtherDamage
+
+    trackHumanoid(targetHumanoid, targetModel)
+    lastDamager[targetHumanoid] = player
+    targetHumanoid:TakeDamage(damage)
+
+    context.Remotes.Push:FireClient(player, "HitConfirmed", {
+        Target = targetModel.Name,
+        Part = partName,
+        Damage = damage,
+        Torso = isTorso,
+    })
+end
+
+function WeaponService.Init(ctx)
+    context = ctx
+    Players.PlayerAdded:Connect(function(player)
+        player:SetAttribute("EquippedWeapon", "TrainingPistol")
+    end)
+    for _, player in ipairs(Players:GetPlayers()) do
+        player:SetAttribute("EquippedWeapon", "TrainingPistol")
+    end
+    context.Remotes.Action.OnServerEvent:Connect(function(player, action, payload)
+        if action == "FireWeapon" and type(payload) == "table" then
+            fire(player, payload.Direction)
+        end
+    end)
+    Players.PlayerRemoving:Connect(function(player)
+        lastShotAt[player] = nil
+    end)
+end
+
+return WeaponService
+
+]====] }, -- ServerScriptService/ElitesSystems/Services/WeaponService.lua
+    { Service = "StarterPlayer", Folders = {"ElitesSystems", "Controllers"}, Name = "CameraController", ClassName = "ModuleScript", Source = [====[
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+
+local CameraController = {}
+CameraController.__index = CameraController
+
+function CameraController.new()
+    local self = setmetatable({}, CameraController)
+    self.Player = Players.LocalPlayer
+    self.RecoilEnabled = true
+    self.BreatherEnabled = true
+    self.Kick = 0
+    self.Connection = nil
+
+    self.Connection = RunService:BindToRenderStep("ElitesSystems_Recoil", Enum.RenderPriority.Camera.Value + 1, function(dt)
+        local camera = workspace.CurrentCamera
+        if camera and self.RecoilEnabled and self.Kick > 0.001 then
+            camera.CFrame = camera.CFrame * CFrame.Angles(-math.rad(self.Kick), 0, 0)
+        end
+        self.Kick = math.max(0, self.Kick - (dt * 7.5))
+    end)
+
+    self.Player.CharacterAdded:Connect(function(character)
+        local humanoid = character:WaitForChild("Humanoid", 8)
+        if humanoid then
+            -- The breathing option deliberately changes only camera feedback, not character animation state.
+            humanoid.CameraOffset = Vector3.zero
+        end
+    end)
+    return self
+end
+
+function CameraController:SetRecoilEnabled(enabled)
+    self.RecoilEnabled = enabled == true
+end
+
+function CameraController:SetBreatherEnabled(enabled)
+    self.BreatherEnabled = enabled == true
+    local character = self.Player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if humanoid and self.BreatherEnabled then
+        humanoid.CameraOffset = Vector3.zero
+    end
+end
+
+function CameraController:OnShot()
+    if self.RecoilEnabled then
+        self.Kick = math.min(self.Kick + 1.25, 4.5)
+    end
+end
+
+function CameraController:Destroy()
+    RunService:UnbindFromRenderStep("ElitesSystems_Recoil")
+end
+
+return CameraController
+
+]====] }, -- StarterPlayer/StarterPlayerScripts/ElitesSystems/Controllers/CameraController.lua
+    { Service = "StarterPlayer", Folders = {"ElitesSystems", "Controllers"}, Name = "MovementController", ClassName = "ModuleScript", Source = [====[
+local Players = game:GetService("Players")
+local CollectionService = game:GetService("CollectionService")
+local RunService = game:GetService("RunService")
+
+local MovementController = {}
+MovementController.__index = MovementController
+
+local function hasBoulderTag(instance, tag)
+    local cursor = instance
+    while cursor and cursor ~= workspace do
+        if CollectionService:HasTag(cursor, tag) then return true end
+        cursor = cursor.Parent
+    end
+    return false
+end
+
+function MovementController.new(config)
+    local self = setmetatable({}, MovementController)
+    self.Config = config
+    self.Player = Players.LocalPlayer
+    self.BoulderAssistEnabled = false
+    self.LastJump = 0
+
+    RunService.Heartbeat:Connect(function()
+        if not self.BoulderAssistEnabled then return end
+        local character = self.Player.Character
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        local root = character and character:FindFirstChild("HumanoidRootPart")
+        if not humanoid or not root or humanoid.Health <= 0 then return end
+        if humanoid.FloorMaterial == Enum.Material.Air or humanoid.MoveDirection.Magnitude < 0.15 then return end
+        if os.clock() - self.LastJump < 1.1 then return end
+
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        params.FilterDescendantsInstances = { character }
+        local hit = workspace:Raycast(root.Position + Vector3.new(0, 1.2, 0), humanoid.MoveDirection.Unit * 5, params)
+        if hit and hasBoulderTag(hit.Instance, self.Config.BoulderTag) then
+            humanoid.Jump = true
+            self.LastJump = os.clock()
+        end
+    end)
+    return self
+end
+
+function MovementController:SetBoulderAssist(enabled)
+    self.BoulderAssistEnabled = enabled == true
+end
+
+return MovementController
+
+]====] }, -- StarterPlayer/StarterPlayerScripts/ElitesSystems/Controllers/MovementController.lua
+    { Service = "StarterPlayer", Folders = {"ElitesSystems", "Controllers"}, Name = "UIController", ClassName = "ModuleScript", Source = [====[
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+
+local UIController = {}
+UIController.__index = UIController
+
+local function create(className, parent, properties)
+    local object = Instance.new(className)
+    for key, value in pairs(properties or {}) do
+        object[key] = value
+    end
+    object.Parent = parent
+    return object
+end
+
+function UIController.new(context)
+    local self = setmetatable({}, UIController)
+    self.Context = context
+    self.Player = Players.LocalPlayer
+    self.Config = context.Config
+    self.Theme = context.Config.Theme
+    self.Localization = context.Localization
+    self.Settings = table.clone(context.Config.DefaultSettings)
+    for key, value in pairs(context.Snapshot.Settings or {}) do
+        self.Settings[key] = value
+    end
+    self.Snapshot = context.Snapshot
+    self.ActiveTab = "Overview"
+    self.MenuOpen = true
+    self.TabButtons = {}
+    self.CrosshairParts = {}
+    self.RadarDots = {}
+    self._connections = {}
+    self.ConnectionManager = context.ConnectionManager.new("UIController")
+
+    self:Build()
+    self:ApplySettings()
+    self:RenderTab(self.ActiveTab)
+    self:StartRadarLoop()
+    self:StartHudLoop()
+    self:BindInput()
+    return self
+end
+
+function UIController:T(key)
+    return self.Localization.Get(key, self.Settings.Language)
+end
+
+function UIController:Connect(signal, callback)
+    return self.ConnectionManager:Connect(signal, callback)
+end
+
+function UIController:Build()
+    local playerGui = self.Player:WaitForChild("PlayerGui")
+    local old = playerGui:FindFirstChild("ElitesSystemsUI")
+    if old then old:Destroy() end
+
+    self.Gui = create("ScreenGui", playerGui, {
+        Name = "ElitesSystemsUI",
+        ResetOnSpawn = false,
+        IgnoreGuiInset = true,
+        DisplayOrder = 80,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+    })
+
+    self.OpenButton = create("TextButton", self.Gui, {
+        Name = "OpenMenu", Size = UDim2.fromOffset(42, 42), Position = UDim2.new(0, 16, 0, 72),
+        BackgroundColor3 = self.Theme.Panel, Text = "E", TextColor3 = self.Theme.Text,
+        Font = Enum.Font.GothamBlack, TextSize = 19, AutoButtonColor = true,
+    })
+    create("UICorner", self.OpenButton, { CornerRadius = UDim.new(0, 12) })
+    create("UIStroke", self.OpenButton, { Color = self.Theme.Purple, Thickness = 1.5 })
+    self:Connect(self.OpenButton.Activated, function() self:SetMenuOpen(not self.MenuOpen) end)
+
+    self.Main = create("Frame", self.Gui, {
+        Name = "Main", Size = UDim2.fromOffset(610, 430), AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.5), BackgroundColor3 = self.Theme.Background, BorderSizePixel = 0,
+    })
+    self.MainScale = create("UIScale", self.Main, { Scale = 1 })
+    local function updateScale()
+        local camera = workspace.CurrentCamera
+        if not camera then return end
+        local viewport = camera.ViewportSize
+        self.MainScale.Scale = math.max(0.45, math.min(1, (viewport.X - 24) / 610, (viewport.Y - 24) / 430))
+    end
+    updateScale()
+    if workspace.CurrentCamera then
+        self:Connect(workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"), updateScale)
+    end
+    create("UICorner", self.Main, { CornerRadius = UDim.new(0, 14) })
+    create("UIStroke", self.Main, { Color = self.Theme.PurpleDark, Thickness = 1.5 })
+
+    self.Header = create("Frame", self.Main, {
+        Name = "Header", Size = UDim2.new(1, 0, 0, 66), BackgroundColor3 = self.Theme.Panel, BorderSizePixel = 0,
+    })
+    create("UICorner", self.Header, { CornerRadius = UDim.new(0, 14) })
+    create("Frame", self.Header, { Position = UDim2.new(0, 0, 1, -14), Size = UDim2.new(1, 0, 0, 14), BackgroundColor3 = self.Theme.Panel, BorderSizePixel = 0 })
+    create("TextLabel", self.Header, {
+        Position = UDim2.fromOffset(18, 9), Size = UDim2.new(1, -90, 0, 26), BackgroundTransparency = 1,
+        Text = "ELITES SYSTEMS", TextColor3 = self.Theme.Text, Font = Enum.Font.GothamBlack,
+        TextSize = 20, TextXAlignment = Enum.TextXAlignment.Left,
+    })
+    create("TextLabel", self.Header, {
+        Position = UDim2.fromOffset(19, 36), Size = UDim2.new(1, -100, 0, 17), BackgroundTransparency = 1,
+        Text = "MODULAR GAMEPLAY FRAMEWORK  •  v" .. self.Config.Version,
+        TextColor3 = self.Theme.Muted, Font = Enum.Font.GothamMedium, TextSize = 10,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    })
+    self.CloseButton = create("TextButton", self.Header, {
+        Position = UDim2.new(1, -48, 0, 13), Size = UDim2.fromOffset(32, 32),
+        BackgroundColor3 = self.Theme.PanelRaised, Text = "×", TextColor3 = self.Theme.Text,
+        Font = Enum.Font.GothamBold, TextSize = 22,
+    })
+    create("UICorner", self.CloseButton, { CornerRadius = UDim.new(0, 9) })
+    self:Connect(self.CloseButton.Activated, function() self:SetMenuOpen(false) end)
+
+    self.Sidebar = create("Frame", self.Main, {
+        Position = UDim2.fromOffset(0, 66), Size = UDim2.new(0, 142, 1, -66),
+        BackgroundColor3 = self.Theme.Panel, BorderSizePixel = 0,
+    })
+    local sideLayout = create("UIListLayout", self.Sidebar, {
+        Padding = UDim.new(0, 7), SortOrder = Enum.SortOrder.LayoutOrder,
+    })
+    sideLayout.Padding = UDim.new(0, 7)
+    create("UIPadding", self.Sidebar, {
+        PaddingTop = UDim.new(0, 16), PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10),
+    })
+
+    self.Content = create("ScrollingFrame", self.Main, {
+        Name = "Content", Position = UDim2.fromOffset(155, 82), Size = UDim2.new(1, -170, 1, -98),
+        BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 4,
+        ScrollBarImageColor3 = self.Theme.Purple, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    })
+    self.ContentLayout = create("UIListLayout", self.Content, {
+        Padding = UDim.new(0, 9), SortOrder = Enum.SortOrder.LayoutOrder,
+    })
+    create("UIPadding", self.Content, { PaddingTop = UDim.new(0, 2), PaddingRight = UDim.new(0, 8), PaddingBottom = UDim.new(0, 8) })
+
+    local tabs = { "Overview", "Combat", "Movement", "Visuals", "Settings" }
+    for index, tabName in ipairs(tabs) do
+        local button = create("TextButton", self.Sidebar, {
+            Name = tabName .. "Tab", Size = UDim2.new(1, 0, 0, 38),
+            BackgroundColor3 = self.Theme.Panel, Text = tabName:upper(),
+            TextColor3 = self.Theme.Muted, Font = Enum.Font.GothamBold, TextSize = 11,
+            AutoButtonColor = true, LayoutOrder = index,
+        })
+        create("UICorner", button, { CornerRadius = UDim.new(0, 8) })
+        self.TabButtons[tabName] = button
+        self:Connect(button.Activated, function() self:RenderTab(tabName) end)
+    end
+
+    self.Crosshair = create("Frame", self.Gui, {
+        Name = "Crosshair", Size = UDim2.fromOffset(1, 1), Position = UDim2.new(0.5, 0, 0.5, 0),
+        BackgroundTransparency = 1,
+    })
+    local function crosshairPart(size, position)
+        local part = create("Frame", self.Crosshair, {
+            Size = size, Position = position, BackgroundColor3 = self.Theme.Purple,
+            BorderSizePixel = 0,
+        })
+        create("UICorner", part, { CornerRadius = UDim.new(1, 0) })
+        table.insert(self.CrosshairParts, part)
+    end
+    crosshairPart(UDim2.fromOffset(2, 9), UDim2.fromOffset(-1, -15))
+    crosshairPart(UDim2.fromOffset(2, 9), UDim2.fromOffset(-1, 6))
+    crosshairPart(UDim2.fromOffset(9, 2), UDim2.fromOffset(-15, -1))
+    crosshairPart(UDim2.fromOffset(9, 2), UDim2.fromOffset(6, -1))
+    crosshairPart(UDim2.fromOffset(3, 3), UDim2.fromOffset(-1.5, -1.5))
+
+    self.Hud = create("TextLabel", self.Gui, {
+        Name = "RankDisplay", AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -16, 0, 16),
+        Size = UDim2.fromOffset(260, 30), BackgroundColor3 = self.Theme.Panel,
+        BackgroundTransparency = 0.12, TextColor3 = self.Theme.Text,
+        Font = Enum.Font.GothamBold, TextSize = 12, Text = "SK 0  |  K 0  D 0  |  G 0",
+    })
+    create("UICorner", self.Hud, { CornerRadius = UDim.new(0, 8) })
+    create("UIStroke", self.Hud, { Color = self.Theme.PurpleDark, Thickness = 1 })
+
+    self.Radar = create("Frame", self.Gui, {
+        Name = "Radar", AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -16, 0, 56),
+        Size = UDim2.fromOffset(142, 142), BackgroundColor3 = self.Theme.Panel,
+        BackgroundTransparency = 0.08, Visible = false,
+    })
+    create("UICorner", self.Radar, { CornerRadius = UDim.new(0, 10) })
+    create("UIStroke", self.Radar, { Color = self.Theme.PurpleDark, Thickness = 1 })
+    create("TextLabel", self.Radar, {
+        Size = UDim2.new(1, 0, 0, 19), BackgroundTransparency = 1, Text = "RADAR • DEV",
+        TextColor3 = self.Theme.Muted, Font = Enum.Font.GothamBold, TextSize = 9,
+    })
+    self.RadarCenter = create("Frame", self.Radar, {
+        Size = UDim2.fromOffset(6, 6), Position = UDim2.new(0.5, -3, 0.5, -1),
+        BackgroundColor3 = self.Theme.Green, BorderSizePixel = 0,
+    })
+    create("UICorner", self.RadarCenter, { CornerRadius = UDim.new(1, 0) })
+
+    self.ToastHolder = create("Frame", self.Gui, {
+        Name = "Notifications", AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 22),
+        Size = UDim2.fromOffset(360, 150), BackgroundTransparency = 1,
+    })
+end
+
+function UIController:SetMenuOpen(isOpen)
+    self.MenuOpen = isOpen == true
+    self.Main.Visible = self.MenuOpen
+    self.OpenButton.Visible = not self.MenuOpen
+end
+
+function UIController:BindInput()
+    self:Connect(UserInputService.InputBegan, function(input, processed)
+        if processed then return end
+        if input.KeyCode == Enum.KeyCode.RightShift then
+            self:SetMenuOpen(not self.MenuOpen)
+        elseif input.UserInputType == Enum.UserInputType.MouseButton1 and not self.MenuOpen then
+            self:FireTrainingShot()
+        end
+    end)
+end
+
+function UIController:SaveSetting(key, value)
+    self.Settings[key] = value
+    self.Context.Remotes.Action:FireServer("SavePreference", { Key = key, Value = value })
+    self:ApplySettings()
+end
+
+function UIController:ApplySettings()
+    if self.Context.Camera then
+        self.Context.Camera:SetRecoilEnabled(self.Settings.RecoilEnabled)
+        self.Context.Camera:SetBreatherEnabled(self.Settings.AimBreatherEnabled)
+    end
+    if self.Context.Movement then
+        self.Context.Movement:SetBoulderAssist(self.Settings.BoulderAssistEnabled)
+    end
+    if self.Context.Visuals then
+        self.Context.Visuals:SetFrames(self.Settings.PlayerFramesEnabled)
+        self.Context.Visuals:SetStats(self.Settings.StatViewerEnabled)
+        self.Context.Visuals:SetIdentity(self.Settings.IdentityEnabled == true)
+    end
+    if self.Crosshair then self.Crosshair.Visible = self.Settings.CrosshairEnabled end
+    if self.Radar then
+        self.Radar.Visible = self.Settings.RadarEnabled and self.Snapshot.RoleInspectionAllowed == true
+    end
+end
+
+function UIController:MakeSection(text)
+    return create("TextLabel", self.Content, {
+        Size = UDim2.new(1, -4, 0, 24), BackgroundTransparency = 1,
+        Text = text:upper(), TextColor3 = self.Theme.Purple,
+        Font = Enum.Font.GothamBlack, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left,
+    })
+end
+
+function UIController:MakeInfo(text)
+    return create("TextLabel", self.Content, {
+        Size = UDim2.new(1, -4, 0, 46), BackgroundColor3 = self.Theme.Panel,
+        Text = text, TextColor3 = self.Theme.Muted, Font = Enum.Font.Gotham,
+        TextSize = 12, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
+    })
+end
+
+function UIController:MakeButton(label, callback, disabled)
+    local button = create("TextButton", self.Content, {
+        Size = UDim2.new(1, -4, 0, 39), BackgroundColor3 = disabled and self.Theme.Panel or self.Theme.PanelRaised,
+        Text = label, TextColor3 = disabled and self.Theme.Muted or self.Theme.Text,
+        Font = Enum.Font.GothamBold, TextSize = 12, AutoButtonColor = not disabled,
+    })
+    create("UICorner", button, { CornerRadius = UDim.new(0, 8) })
+    create("UIStroke", button, { Color = self.Theme.PurpleDark, Transparency = 0.45, Thickness = 1 })
+    if not disabled then self:Connect(button.Activated, function() callback(button) end) end
+    return button
+end
+
+function UIController:MakeToggle(label, key, callback, requiresInspector)
+    local row = create("Frame", self.Content, {
+        Size = UDim2.new(1, -4, 0, 43), BackgroundColor3 = self.Theme.Panel,
+    })
+    create("UICorner", row, { CornerRadius = UDim.new(0, 8) })
+    create("TextLabel", row, {
+        Position = UDim2.fromOffset(12, 0), Size = UDim2.new(1, -130, 1, 0),
+        BackgroundTransparency = 1, Text = label, TextColor3 = self.Theme.Text,
+        Font = Enum.Font.GothamSemibold, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left,
+    })
+    local locked = requiresInspector and self.Snapshot.RoleInspectionAllowed ~= true
+    local button = create("TextButton", row, {
+        AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -9, 0.5, 0),
+        Size = UDim2.fromOffset(105, 28), BackgroundColor3 = locked and self.Theme.PanelRaised or (self.Settings[key] and self.Theme.PurpleDark or self.Theme.PanelRaised),
+        Text = locked and "DEV ONLY" or (self.Settings[key] and self:T("enabled") or self:T("disabled")),
+        TextColor3 = self.Theme.Text, Font = Enum.Font.GothamBold, TextSize = 10,
+        AutoButtonColor = not locked,
+    })
+    create("UICorner", button, { CornerRadius = UDim.new(0, 7) })
+    if not locked then
+        self:Connect(button.Activated, function()
+            local nextValue = not self.Settings[key]
+            if callback then callback(nextValue) else self:SaveSetting(key, nextValue) end
+            button.Text = nextValue and self:T("enabled") or self:T("disabled")
+            button.BackgroundColor3 = nextValue and self.Theme.PurpleDark or self.Theme.PanelRaised
+        end)
+    else
+        self:Connect(button.Activated, function()
+            self:Notify(self:T("devOnly"), "Warning")
+        end)
+    end
+    return row
+end
+
+function UIController:RenderTab(tabName)
+    self.ActiveTab = tabName
+    for name, button in pairs(self.TabButtons) do
+        local active = name == tabName
+        button.BackgroundColor3 = active and self.Theme.PurpleDark or self.Theme.Panel
+        button.TextColor3 = active and self.Theme.Text or self.Theme.Muted
+    end
+    for _, child in ipairs(self.Content:GetChildren()) do
+        if child ~= self.ContentLayout and not child:IsA("UIPadding") then child:Destroy() end
+    end
+
+    if tabName == "Overview" then
+        self:MakeSection("System overview")
+        self:MakeInfo(self:T("ready") .. "\nServer-authoritative prototype • " .. self.Config.Version)
+        if self.Snapshot.OwnRole then
+            self:MakeInfo("YOUR TEST ROLE: " .. string.upper(tostring(self.Snapshot.OwnRole)))
+        end
+        local stats = self.Snapshot.Stats or {}
+        self:MakeInfo(string.format("%s: %d     %s: %d     %s: %d", self:T("kills"), stats.Kills or 0, self:T("deaths"), stats.Deaths or 0, self:T("gold"), stats.Gold or 0))
+        self:MakeSection("Quick actions")
+        self:MakeButton("FIRE TRAINING PISTOL", function() self:FireTrainingShot() end)
+        self:MakeButton(self:T("respawn"), function()
+            local character = self.Player.Character
+            local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+            if humanoid and humanoid.Health > 0 then
+                self:Notify("You are already alive.", "Info")
+            else
+                self.Context.Remotes.Action:FireServer("RequestRespawn")
+            end
+        end)
+        self:MakeSection("Developer note")
+        self:MakeInfo("Role inspection and radar are developer-only. Add your UserId in Shared/Config.lua to enable the test tools.")
+
+    elseif tabName == "Combat" then
+        self:MakeSection("Camera and weapon feedback")
+        self:MakeToggle(self:T("recoil"), "RecoilEnabled")
+        self:MakeToggle(self:T("breather"), "AimBreatherEnabled")
+        self:MakeToggle(self:T("crosshair"), "CrosshairEnabled")
+        self:MakeInfo("The server validates each shot, enforces the weapon cooldown, raycasts from the character and calculates damage. Click the game world or use the test button to fire.")
+        self:MakeButton("FIRE TRAINING PISTOL", function() self:FireTrainingShot() end)
+        self:MakeSection("Last-hit feedback")
+        self.LastHitLabel = self:MakeInfo("No confirmed hits this session.")
+
+    elseif tabName == "Movement" then
+        self:MakeSection("Server-controlled movement")
+        self:MakeToggle(self:T("sprint"), "SprintEnabled", function(value)
+            self.Context.Remotes.Action:FireServer("SetSprint", { Enabled = value })
+            self.Settings.SprintEnabled = value
+        end)
+        self:MakeButton("JUMP PRESET: " .. tostring(self.CurrentJumpPreset or "NORMAL"), function(button)
+            local presets = { "Normal", "Float", "Heavy" }
+            local current = table.find(presets, self.CurrentJumpPreset or "Normal") or 1
+            self.CurrentJumpPreset = presets[current % #presets + 1]
+            self.Context.Remotes.Action:FireServer("SetJumpPreset", { Preset = self.CurrentJumpPreset })
+            button.Text = "JUMP PRESET: " .. string.upper(self.CurrentJumpPreset)
+        end)
+        self:MakeToggle(self:T("boulder"), "BoulderAssistEnabled")
+        self:MakeInfo("Sprint is symmetric in both directions. Boulder assist performs a normal jump only when you approach an obstacle tagged 'Boulder'. It never moves or anchors your hitbox.")
+
+    elseif tabName == "Visuals" then
+        self:MakeSection("Player information and visuals")
+        self:MakeToggle(self:T("frames"), "PlayerFramesEnabled")
+        self:MakeToggle(self:T("stats"), "StatViewerEnabled")
+        self:MakeToggle(self:T("radar"), "RadarEnabled", function(value)
+            if value and self.Snapshot.RoleInspectionAllowed ~= true then
+                self:Notify(self:T("devOnly"), "Warning")
+                return
+            end
+            self:SaveSetting("RadarEnabled", value)
+        end, true)
+        self:MakeToggle(self:T("identity"), "IdentityEnabled", function(value)
+            if value and self.Snapshot.RoleInspectionAllowed ~= true then
+                self:Notify(self:T("devOnly"), "Warning")
+                return
+            end
+            self.Settings.IdentityEnabled = value
+            self.Context.Visuals:SetIdentity(value)
+        end, true)
+        self:MakeInfo("Player outlines use the normal occlusion mode. Hidden roles are sent only to UserIds authorized in Config.lua.")
+
+    elseif tabName == "Settings" then
+        self:MakeSection("Personal preferences")
+        self:MakeButton(self:T("language") .. ": " .. (self.Settings.Language == "es" and self:T("spanish") or self:T("english")), function(button)
+            self:SaveSetting("Language", self.Settings.Language == "en" and "es" or "en")
+            self:RenderTab("Settings")
+        end)
+        self:MakeButton("RESET LOCAL VISUAL SETTINGS", function()
+            for key, value in pairs(self.Config.DefaultSettings) do
+                self.Settings[key] = value
+                self.Context.Remotes.Action:FireServer("SavePreference", { Key = key, Value = value })
+            end
+            self:ApplySettings()
+            self:Notify("Visual settings reset.", "Success")
+            self:RenderTab("Settings")
+        end)
+        self:MakeSection("Module availability")
+        self:MakeInfo("Some requested modules need your own animation IDs, sound assets, round rules or tagged map objects. Their extension points are documented in README.md.")
+    end
+end
+
+function UIController:FireTrainingShot()
+    local camera = workspace.CurrentCamera
+    if not camera then return end
+    self.Context.Remotes.Action:FireServer("FireWeapon", { Direction = camera.CFrame.LookVector })
+end
+
+function UIController:Notify(message, kind)
+    local color = self.Theme.Purple
+    if kind == "Success" then color = self.Theme.Green end
+    if kind == "Warning" then color = self.Theme.Gold end
+    if kind == "Error" then color = self.Theme.Red end
+    local toast = create("TextLabel", self.ToastHolder, {
+        Size = UDim2.new(1, 0, 0, 34), BackgroundColor3 = self.Theme.PanelRaised,
+        BackgroundTransparency = 0.06, Text = tostring(message), TextColor3 = self.Theme.Text,
+        Font = Enum.Font.GothamSemibold, TextSize = 12, TextWrapped = true,
+    })
+    create("UICorner", toast, { CornerRadius = UDim.new(0, 8) })
+    create("UIStroke", toast, { Color = color, Thickness = 1.2 })
+    task.delay(2.7, function()
+        if toast.Parent then
+            local tween = TweenService:Create(toast, TweenInfo.new(0.25), { BackgroundTransparency = 1, TextTransparency = 1 })
+            tween:Play()
+            tween.Completed:Wait()
+            toast:Destroy()
+        end
+    end)
+end
+
+function UIController:UpdateHit(data)
+    if self.LastHitLabel and self.LastHitLabel.Parent then
+        self.LastHitLabel.Text = string.format("HIT CONFIRMED  •  %s / %s  •  %d damage", tostring(data.Target), tostring(data.Part), tonumber(data.Damage) or 0)
+    end
+    self:Notify("Hit confirmed: " .. tostring(data.Target) .. " (" .. tostring(data.Damage) .. ")", "Success")
+end
+
+function UIController:UpdateStats(stats)
+    self.Snapshot.Stats = stats
+    self.Hud.Text = string.format("K %d  |  D %d  |  G %d", stats.Kills or 0, stats.Deaths or 0, stats.Gold or 0)
+    if self.ActiveTab == "Overview" then self:RenderTab("Overview") end
+end
+
+function UIController:SetRoleSnapshot(snapshot)
+    self.Snapshot.RoleInspectionAllowed = snapshot.RoleInspectionAllowed == true
+    self.Context.Visuals:SetRoleSnapshot(snapshot)
+    self:ApplySettings()
+end
+
+function UIController:SetOwnRole(role)
+    self.Snapshot.OwnRole = role
+    self:Notify("Your role: " .. string.upper(tostring(role)), "Info")
+    if self.ActiveTab == "Overview" then self:RenderTab("Overview") end
+end
+
+function UIController:StartHudLoop()
+    local function update()
+        local stats = {
+            Kills = self.Player:GetAttribute("Kills") or (self.Snapshot.Stats and self.Snapshot.Stats.Kills) or 0,
+            Deaths = self.Player:GetAttribute("Deaths") or (self.Snapshot.Stats and self.Snapshot.Stats.Deaths) or 0,
+            Gold = self.Player:GetAttribute("Gold") or (self.Snapshot.Stats and self.Snapshot.Stats.Gold) or 0,
+        }
+        self.Hud.Text = string.format("K %d  |  D %d  |  G %d", stats.Kills, stats.Deaths, stats.Gold)
+    end
+    self:Connect(self.Player:GetAttributeChangedSignal("Kills"), update)
+    self:Connect(self.Player:GetAttributeChangedSignal("Deaths"), update)
+    self:Connect(self.Player:GetAttributeChangedSignal("Gold"), update)
+    update()
+end
+
+function UIController:StartRadarLoop()
+    task.spawn(function()
+        while self.Gui and self.Gui.Parent do
+            local isEnabled = self.Settings.RadarEnabled and self.Snapshot.RoleInspectionAllowed == true
+            self.Radar.Visible = isEnabled
+            if isEnabled then
+                for _, dot in ipairs(self.RadarDots) do dot:Destroy() end
+                table.clear(self.RadarDots)
+                local character = self.Player.Character
+                local root = character and character:FindFirstChild("HumanoidRootPart")
+                if root then
+                    for _, other in ipairs(Players:GetPlayers()) do
+                        if other ~= self.Player then
+                            local otherRoot = other.Character and other.Character:FindFirstChild("HumanoidRootPart")
+                            if otherRoot then
+                                local offset = otherRoot.Position - root.Position
+                                local x = math.clamp(offset.X / 150, -0.43, 0.43)
+                                local z = math.clamp(offset.Z / 150, -0.43, 0.43)
+                                local dot = create("Frame", self.Radar, {
+                                    Size = UDim2.fromOffset(5, 5),
+                                    Position = UDim2.new(0.5 + x, -2, 0.5 + z, -1),
+                                    BackgroundColor3 = self.Theme.Red, BorderSizePixel = 0,
+                                })
+                                create("UICorner", dot, { CornerRadius = UDim.new(1, 0) })
+                                table.insert(self.RadarDots, dot)
+                            end
+                        end
+                    end
+                end
+            end
+            task.wait(0.2)
+        end
+    end)
+end
+
+return UIController
+
+]====] }, -- StarterPlayer/StarterPlayerScripts/ElitesSystems/Controllers/UIController.lua
+    { Service = "StarterPlayer", Folders = {"ElitesSystems", "Controllers"}, Name = "VisualController", ClassName = "ModuleScript", Source = [====[
+local Players = game:GetService("Players")
+
+local VisualController = {}
+VisualController.__index = VisualController
+
+local ROLE_COLORS = {
+    Murderer = Color3.fromRGB(255, 75, 100),
+    Sheriff = Color3.fromRGB(90, 170, 255),
+    Innocent = Color3.fromRGB(115, 225, 160),
+}
+
+function VisualController.new(localPlayer)
+    local self = setmetatable({}, VisualController)
+    self.LocalPlayer = localPlayer
+    self.FramesEnabled = false
+    self.StatsEnabled = false
+    self.IdentityEnabled = false
+    self.RoleInspectionAllowed = false
+    self.Roles = {}
+    self.Tracked = {}
+
+    local function bindPlayer(player)
+        if player == self.LocalPlayer then return end
+        local function bindCharacter(character)
+            self:RefreshCharacter(player, character)
+        end
+        player.CharacterAdded:Connect(bindCharacter)
+        if player.Character then bindCharacter(player.Character) end
+    end
+    for _, player in ipairs(Players:GetPlayers()) do bindPlayer(player) end
+    Players.PlayerAdded:Connect(bindPlayer)
+    Players.PlayerRemoving:Connect(function(player)
+        self:ClearPlayer(player)
+    end)
+    return self
+end
+
+function VisualController:ClearPlayer(player)
+    local record = self.Tracked[player]
+    if record then
+        if record.Highlight then record.Highlight:Destroy() end
+        if record.Billboard then record.Billboard:Destroy() end
+        self.Tracked[player] = nil
+    end
+end
+
+function VisualController:RefreshCharacter(player, character)
+    self:ClearPlayer(player)
+    local record = {}
+    self.Tracked[player] = record
+
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "ElitesPhantomFrame"
+    highlight.Adornee = character
+    highlight.DepthMode = Enum.HighlightDepthMode.Occluded
+    highlight.FillTransparency = 0.88
+    highlight.OutlineTransparency = 0.08
+    highlight.Enabled = self.FramesEnabled
+    highlight.Parent = character
+    record.Highlight = highlight
+
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name = "ElitesStatViewer"
+    billboard.Size = UDim2.fromOffset(150, 42)
+    billboard.StudsOffset = Vector3.new(0, 3.5, 0)
+    billboard.AlwaysOnTop = false
+    billboard.Enabled = self.StatsEnabled
+    billboard.Adornee = character:FindFirstChild("Head") or character:FindFirstChild("HumanoidRootPart")
+    billboard.Parent = character
+
+    local label = Instance.new("TextLabel")
+    label.Name = "Info"
+    label.Size = UDim2.fromScale(1, 1)
+    label.BackgroundColor3 = Color3.fromRGB(15, 11, 24)
+    label.BackgroundTransparency = 0.18
+    label.TextColor3 = Color3.fromRGB(245, 240, 255)
+    label.TextStrokeTransparency = 0.6
+    label.Font = Enum.Font.GothamSemibold
+    label.TextSize = 12
+    label.Text = player.DisplayName
+    label.Parent = billboard
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 6)
+    corner.Parent = label
+    record.Billboard = billboard
+    record.Label = label
+
+    task.spawn(function()
+        while character.Parent and self.Tracked[player] == record do
+            local humanoid = character:FindFirstChildOfClass("Humanoid")
+            local level = player:GetAttribute("Level")
+            local eyesOpen = character:GetAttribute("EyesOpen")
+            local line = player.DisplayName
+            if humanoid then
+                line ..= string.format("  |  HP %d", math.max(0, math.floor(humanoid.Health)))
+            end
+            if typeof(level) == "number" then line ..= "  |  Lv " .. tostring(math.floor(level)) end
+            if typeof(eyesOpen) == "boolean" then line ..= eyesOpen and "  |  Eyes open" or "  |  Eyes closed" end
+            label.Text = line
+            task.wait(0.25)
+        end
+    end)
+    self:ApplyRecord(player, record)
+end
+
+function VisualController:ApplyRecord(player, record)
+    if not record then return end
+    if record.Highlight then
+        record.Highlight.Enabled = self.FramesEnabled
+        local role = self.Roles[tostring(player.UserId)]
+        local color = self.IdentityEnabled and self.RoleInspectionAllowed and ROLE_COLORS[role] or Color3.fromRGB(166, 112, 255)
+        record.Highlight.OutlineColor = color
+        record.Highlight.FillColor = color
+    end
+    if record.Billboard then
+        record.Billboard.Enabled = self.StatsEnabled
+    end
+end
+
+function VisualController:SetFrames(enabled)
+    self.FramesEnabled = enabled == true
+    for player, record in pairs(self.Tracked) do self:ApplyRecord(player, record) end
+end
+
+function VisualController:SetStats(enabled)
+    self.StatsEnabled = enabled == true
+    for player, record in pairs(self.Tracked) do self:ApplyRecord(player, record) end
+end
+
+function VisualController:SetRoleSnapshot(snapshot)
+    if type(snapshot) ~= "table" then return end
+    self.RoleInspectionAllowed = snapshot.RoleInspectionAllowed == true
+    self.Roles = type(snapshot.Roles) == "table" and snapshot.Roles or {}
+    for player, record in pairs(self.Tracked) do self:ApplyRecord(player, record) end
+end
+
+function VisualController:SetIdentity(enabled)
+    self.IdentityEnabled = enabled == true and self.RoleInspectionAllowed
+    for player, record in pairs(self.Tracked) do self:ApplyRecord(player, record) end
+end
+
+return VisualController
+
+]====] }, -- StarterPlayer/StarterPlayerScripts/ElitesSystems/Controllers/VisualController.lua
+    { Service = "ServerScriptService", Folders = {"ElitesSystems"}, Name = "Bootstrap", ClassName = "Script", Source = [====[
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local shared = ReplicatedStorage:WaitForChild("ElitesSystems"):WaitForChild("Shared")
+local Config = require(shared:WaitForChild("Config"))
+
+local root = script.Parent
+local servicesFolder = root:WaitForChild("Services")
+local DataService = require(servicesFolder:WaitForChild("DataService"))
+local RoleService = require(servicesFolder:WaitForChild("RoleService"))
+local WeaponService = require(servicesFolder:WaitForChild("WeaponService"))
+local MovementService = require(servicesFolder:WaitForChild("MovementService"))
+local PickupService = require(servicesFolder:WaitForChild("PickupService"))
+
+local remotesFolder = ReplicatedStorage:FindFirstChild(Config.RemoteFolderName)
+if not remotesFolder then
+    remotesFolder = Instance.new("Folder")
+    remotesFolder.Name = Config.RemoteFolderName
+    remotesFolder.Parent = ReplicatedStorage
+end
+
+local function getRemote(className, name)
+    local remote = remotesFolder:FindFirstChild(name)
+    if remote and not remote:IsA(className) then
+        remote:Destroy()
+        remote = nil
+    end
+    if not remote then
+        remote = Instance.new(className)
+        remote.Name = name
+        remote.Parent = remotesFolder
+    end
+    return remote
+end
+
+local Remotes = {
+    Action = getRemote("RemoteEvent", "Action"),
+    Push = getRemote("RemoteEvent", "Push"),
+    RequestSnapshot = getRemote("RemoteFunction", "RequestSnapshot"),
+}
+
+local context = {
+    Config = Config,
+    Remotes = Remotes,
+}
+
+function context.Notify(player, message, kind)
+    if player and player.Parent == Players then
+        Remotes.Push:FireClient(player, "Notification", {
+            Message = tostring(message),
+            Kind = kind or "Info",
+        })
+    end
+end
+
+-- Initialize services in dependency order.
+DataService.Init(context)
+context.DataService = DataService
+RoleService.Init(context)
+context.RoleService = RoleService
+WeaponService.Init(context)
+MovementService.Init(context)
+PickupService.Init(context)
+
+Remotes.RequestSnapshot.OnServerInvoke = function(player)
+    local dataSnapshot = DataService.GetSnapshot(player)
+    local roleSnapshot = RoleService.GetSnapshot(player)
+    return {
+        Version = Config.Version,
+        Stats = dataSnapshot.Stats,
+        Settings = dataSnapshot.Settings,
+        RoleInspectionAllowed = roleSnapshot.RoleInspectionAllowed,
+        OwnRole = roleSnapshot.OwnRole,
+        Roles = roleSnapshot.Roles,
+        IsStudio = RunService:IsStudio(),
+    }
+end
+
+Remotes.Action.OnServerEvent:Connect(function(player, action, payload)
+    if action == "SavePreference" and type(payload) == "table" then
+        local saved = DataService.SavePreference(player, payload.Key, payload.Value)
+        if not saved then
+            context.Notify(player, "That setting could not be saved.", "Warning")
+        end
+    elseif action == "RequestRespawn" then
+        local character = player.Character
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        if not humanoid or humanoid.Health > 0 then return end
+        local now = os.clock()
+        local last = player:GetAttribute("LastRespawnRequest") or 0
+        if now - last < 5 then return end
+        player:SetAttribute("LastRespawnRequest", now)
+        task.spawn(function()
+            pcall(function()
+                player:LoadCharacterAsync()
+            end)
+        end)
+    end
+end)
+
+print("[ElitesSystems] Server started. Version " .. Config.Version)
+
+]====] }, -- ServerScriptService/ElitesSystems/Bootstrap.server.lua
+    { Service = "StarterPlayer", Folders = {"ElitesSystems"}, Name = "Bootstrap", ClassName = "LocalScript", Source = [====[
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+local root = ReplicatedStorage:WaitForChild("ElitesSystems")
+local shared = root:WaitForChild("Shared")
+local Config = require(shared:WaitForChild("Config"))
+local Localization = require(shared:WaitForChild("Localization"))
+local ConnectionManager = require(shared:WaitForChild("ConnectionManager"))
+
+local remotesFolder = ReplicatedStorage:WaitForChild(Config.RemoteFolderName)
+local Remotes = {
+    Action = remotesFolder:WaitForChild("Action"),
+    Push = remotesFolder:WaitForChild("Push"),
+    RequestSnapshot = remotesFolder:WaitForChild("RequestSnapshot"),
+}
+
+-- Wait briefly for the server's saved profile to finish loading before requesting settings.
+local loadDeadline = os.clock() + 10
+while player:GetAttribute("DataLoaded") ~= true and os.clock() < loadDeadline do
+    task.wait(0.1)
+end
+
+local snapshot = {}
+local ok, result = pcall(function()
+    return Remotes.RequestSnapshot:InvokeServer()
+end)
+if ok and type(result) == "table" then
+    snapshot = result
+else
+    warn("[ElitesSystems] Could not fetch initial server snapshot:", result)
+    snapshot = { Stats = {}, Settings = {}, RoleInspectionAllowed = false, Roles = {} }
+end
+
+local controllersFolder = script.Parent:WaitForChild("Controllers")
+local function safeRequire(moduleName)
+    local module = controllersFolder:FindFirstChild(moduleName)
+    if not module then error("Missing controller: " .. moduleName) end
+    local success, result = pcall(require, module)
+    if not success then
+        warn("[ElitesSystems] Controller failed to load: " .. moduleName .. " / " .. tostring(result))
+        error(result)
+    end
+    return result
+end
+
+local CameraController = safeRequire("CameraController")
+local MovementController = safeRequire("MovementController")
+local VisualController = safeRequire("VisualController")
+local UIController = safeRequire("UIController")
+
+local camera = CameraController.new()
+local movement = MovementController.new(Config)
+local visuals = VisualController.new(player)
+visuals:SetRoleSnapshot({
+    RoleInspectionAllowed = snapshot.RoleInspectionAllowed,
+    Roles = snapshot.Roles or {},
+})
+
+local context = {
+    Config = Config,
+    Localization = Localization,
+    ConnectionManager = ConnectionManager,
+    Remotes = Remotes,
+    Snapshot = snapshot,
+    Camera = camera,
+    Movement = movement,
+    Visuals = visuals,
+}
+local ui = UIController.new(context)
+
+Remotes.Push.OnClientEvent:Connect(function(eventName, payload)
+    if type(payload) ~= "table" then payload = {} end
+    if eventName == "Notification" then
+        ui:Notify(payload.Message or "Notification", payload.Kind)
+    elseif eventName == "WeaponFired" then
+        camera:OnShot()
+    elseif eventName == "HitConfirmed" then
+        ui:UpdateHit(payload)
+    elseif eventName == "RoleSnapshot" then
+        ui:SetRoleSnapshot(payload)
+    elseif eventName == "OwnRole" then
+        ui:SetOwnRole(payload.Role)
+    end
+end)
+
+player.CharacterAdded:Connect(function()
+    task.wait(0.5)
+    ui:Notify("Character ready.", "Info")
+end)
+
+print("[ElitesSystems] Client started. UI: RightShift to toggle.")
+
+]====] }, -- StarterPlayer/StarterPlayerScripts/ElitesSystems/Bootstrap.client.lua
+}
+
+for _, entry in ipairs(FILES) do
+    local ok, err = pcall(installEntry, entry)
+    if not ok then
+        error("[Elites Systems] Failed installing " .. entry.Name .. ": " .. tostring(err))
+    end
+end
+
+print(string.format("[Elites Systems] Installation complete: %d scripts created.", installedCount))
+print("[Elites Systems] Check Output for startup messages. Press RightShift in-game to toggle the UI.")
+print("[Elites Systems] Before testing developer-only role inspection, set your UserId in Config.AdminUserIds.")
