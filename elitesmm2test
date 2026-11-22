@@ -1,5 +1,5 @@
 --[[
-ELITES SYSTEMS v0.1.0 - ONE-FILE STUDIO INSTALLER
+ELITES SYSTEMS v0.2.0 - ONE-FILE STUDIO INSTALLER
 
 HOW TO USE:
 1. Open your own Roblox experience in Roblox Studio (edit mode, not Play mode).
@@ -67,7 +67,9 @@ local function installEntry(entry)
 
     local object = Instance.new(entry.ClassName)
     object.Name = entry.Name
-    object.Source = entry.Source
+    if object:IsA("LuaSourceContainer") then
+        object.Source = entry.Source or ""
+    end
     if object:IsA("BaseScript") then
         object.Disabled = false
     end
@@ -76,13 +78,14 @@ local function installEntry(entry)
 end
 
 local FILES = {
+    { Service = "ReplicatedStorage", Folders = {"ElitesSystems"}, Name = "Assets", ClassName = "Folder" }, -- Add approved Sounds/Decals/Animations here.
     { Service = "ReplicatedStorage", Folders = {"ElitesSystems", "Shared"}, Name = "Config", ClassName = "ModuleScript", Source = [====[
 -- Elites Systems | Shared configuration
 -- Change these values for your own experience. Server-side values remain authoritative.
 
 local Config = {}
 
-Config.Version = "0.1.0"
+Config.Version = "0.2.0"
 Config.DataStoreName = "ElitesSystems_PlayerData_v1"
 Config.RemoteFolderName = "Remotes"
 Config.AllowRoleInspectionInStudio = true
@@ -135,6 +138,11 @@ Config.DefaultSettings = {
     RadarEnabled = false,
     StatViewerEnabled = false,
     BoulderAssistEnabled = false,
+    CameraFilterEnabled = false,
+    LogConsoleEnabled = false,
+    ChatToLogEnabled = false,
+    RankOverlayEnabled = true,
+    NPCTrackingEnabled = false,
     Language = "en",
 }
 
@@ -146,10 +154,19 @@ Config.SavedBooleanSettings = {
     RadarEnabled = true,
     StatViewerEnabled = true,
     BoulderAssistEnabled = true,
+    CameraFilterEnabled = true,
+    LogConsoleEnabled = true,
+    ChatToLogEnabled = true,
+    RankOverlayEnabled = true,
+    NPCTrackingEnabled = true,
 }
 
 Config.Roles = { "Murderer", "Sheriff", "Innocent" }
 Config.WitnessDistance = 90
+Config.SpeedKillWindow = 5
+Config.DisableAutoJump = true -- Set false to preserve Roblox mobile auto-jump.
+Config.NPCTag = "ElitesNPC"
+Config.AssetFolderName = "Assets" -- Place approved Sound/Decal/Animation/Image instances in ReplicatedStorage/ElitesSystems/Assets.
 Config.PickupTag = "GoldPickup"
 Config.BoulderTag = "Boulder"
 
@@ -237,6 +254,43 @@ return {
 }
 
 ]====] }, -- ReplicatedStorage/ElitesSystems/Shared/FeatureCatalog.lua
+    { Service = "ReplicatedStorage", Folders = {"ElitesSystems", "Shared"}, Name = "ExtendedFeatureCatalog", ClassName = "ModuleScript", Source = [====[
+-- Status map for the second requested module set.
+-- Implemented/adapted items are described honestly; restricted hooks are not provided.
+return {
+    { name = "DeltaDecoder", status = "not-included", note = "No GitHub remote config decryption. A client-held key cannot protect a secret or reliably prevent replay; use server-side signed/versioned configuration if needed." },
+    { name = "MainLoader", status = "implemented", note = "The server/client Bootstrap scripts initialize the project." },
+    { name = "ErrorHandler", status = "implemented", note = "Client Output warnings/errors are copied into the private Elites Systems log." },
+    { name = "RemoteSync", status = "adapted", note = "Server-authoritative announcements/events only; arbitrary client CFrame or identity replication is not accepted." },
+    { name = "AssetGrabber", status = "adapted", note = "Preloads developer-supplied Roblox asset IDs through ContentProvider; does not download or execute URL content." },
+    { name = "CrosshairController", status = "implemented", note = "Existing crosshair UI supports enabled/disabled state and purple styling." },
+    { name = "MenuFrame", status = "implemented", note = "Existing native ScreenGui menu; Roblox does not use LuaHTML as a standard UI runtime." },
+    { name = "RankOverlay", status = "implemented", note = "Shows D/C/B/A rank attributes above characters when supplied by the game." },
+    { name = "ChatHook", status = "adapted", note = "Optional read-only local chat logging; does not intercept, suppress, or reroute public chat." },
+    { name = "CameraFilter", status = "implemented", note = "Black/purple edge vignette built from native GUI gradients." },
+    { name = "LogSystem", status = "implemented", note = "Private on-screen diagnostic console with clear function." },
+    { name = "RecoilSmoother", status = "implemented", note = "Existing local camera recoil decay." },
+    { name = "GravityAdjuster", status = "implemented", note = "Existing server-selected jump presets." },
+    { name = "WalkSpeedMod", status = "implemented", note = "Existing server-authoritative walk/sprint settings." },
+    { name = "SilentWalk", status = "extension", note = "Requires animation IDs selected by the experience creator." },
+    { name = "AntiAGK", status = "adapted", note = "Uses normal humanoid movement settings; no exploit hook or anti-cheat bypass." },
+    { name = "HumanoidDelta", status = "adapted", note = "Can observe normal Humanoid state changes; cannot hook or rewrite engine methods." },
+    { name = "LookAtUtility", status = "not-included", note = "No automatic snap-to-player aim. A game-owned NPC interaction camera can be added with explicit target rules." },
+    { name = "BodyVelocity", status = "adapted", note = "Uses the existing server-owned movement controller; no client-injected velocity or dash exploit." },
+    { name = "FakeDeath", status = "not-included", note = "Does not suppress real death or spoof Humanoid state. A designed downed/revive mechanic needs game-specific rules." },
+    { name = "NameChanger", status = "adapted", note = "Rank overlay may display a game-owned DisplayAlias attribute; Roblox account identity is not spoofed." },
+    { name = "ConnectionBlocker", status = "not-included", note = "Does not block PlayerAdded, disconnect anti-cheat listeners, or tamper with game connections." },
+    { name = "InputInverter", status = "extension", note = "Needs a custom controls adapter; default PlayerModule input is not monkey-patched." },
+    { name = "LogCleaner", status = "adapted", note = "Clears only the private Elites Systems console, never Roblox moderation/system logs." },
+    { name = "HeartbeatMonitor", status = "implemented", note = "Uses one lightweight Heartbeat monitor for runtime diagnostics." },
+    { name = "PlayerTracker", status = "implemented", note = "Tracks player joins/leaves and current player count." },
+    { name = "EntityTracker", status = "implemented", note = "Highlights NPC models tagged ElitesNPC with occluded visibility." },
+    { name = "KillFeedFilter", status = "adapted", note = "Formats server-originated Elites Systems kill events; does not intercept another game's private kill feed." },
+    { name = "SpeedKillCounter", status = "implemented", note = "Counts rapid successive eliminations registered by the server." },
+    { name = "Announcer", status = "implemented", note = "Server-authorized developer test announcement broadcast." },
+}
+
+]====] }, -- ReplicatedStorage/ElitesSystems/Shared/ExtendedFeatureCatalog.lua
     { Service = "ReplicatedStorage", Folders = {"ElitesSystems", "Shared"}, Name = "Localization", ClassName = "ModuleScript", Source = [====[
 -- Small built-in localization table. Add keys/languages here as the interface grows.
 local Localization = {}
@@ -295,7 +349,7 @@ local cache = {}
 local saveScheduled = {}
 local pendingStats = {}
 
-local STAT_KEYS = { Kills = true, Deaths = true, Gold = true }
+local STAT_KEYS = { Kills = true, Deaths = true, Gold = true, SpeedKills = true }
 
 local function makeDefaultData(Config)
     local settings = {}
@@ -304,7 +358,7 @@ local function makeDefaultData(Config)
     end
     return {
         Version = 1,
-        Stats = { Kills = 0, Deaths = 0, Gold = 0 },
+        Stats = { Kills = 0, Deaths = 0, Gold = 0, SpeedKills = 0 },
         Settings = settings,
     }
 end
@@ -370,7 +424,7 @@ end
 function DataService.GetSnapshot(player)
     local data = cache[player]
     if not data then
-        return { Stats = { Kills = 0, Deaths = 0, Gold = 0 }, Settings = {} }
+        return { Stats = { Kills = 0, Deaths = 0, Gold = 0, SpeedKills = 0 }, Settings = {} }
     end
     local stats = table.clone(data.Stats)
     local settings = table.clone(data.Settings)
@@ -505,6 +559,7 @@ local function applyCharacter(player, character)
     local humanoid = character:WaitForChild("Humanoid", 10)
     if not humanoid then return end
     humanoid.UseJumpPower = true
+    if context.Config.DisableAutoJump then humanoid.AutoJumpEnabled = false end
     humanoid.WalkSpeed = getExpectedSpeed(player)
     local preset = jumpPresetByPlayer[player] or context.Config.Movement.DefaultJumpPreset
     humanoid.JumpPower = context.Config.Movement.JumpPresets[preset] or 50
@@ -547,6 +602,7 @@ function MovementService.Init(ctx)
     local function setup(player)
         sprintByPlayer[player] = false
         jumpPresetByPlayer[player] = context.Config.Movement.DefaultJumpPreset
+        if context.Config.DisableAutoJump then player.AutoJumpEnabled = false end
         player.CharacterAdded:Connect(function(character)
             applyCharacter(player, character)
         end)
@@ -801,6 +857,7 @@ local context
 local lastShotAt = {}
 local trackedHumanoids = {}
 local lastDamager = {}
+local lastKillAt = {}
 
 local function isFiniteVector3(value)
     return typeof(value) == "Vector3"
@@ -825,6 +882,16 @@ local function trackHumanoid(humanoid, model)
         local attacker = lastDamager[humanoid]
         if attacker and attacker.Parent == Players and attacker ~= victim then
             context.DataService.AddStat(attacker, "Kills", 1)
+            local now = os.clock()
+            local previousKill = lastKillAt[attacker]
+            if previousKill and now - previousKill <= (context.Config.SpeedKillWindow or 5) then
+                context.DataService.AddStat(attacker, "SpeedKills", 1)
+            end
+            lastKillAt[attacker] = now
+            context.Remotes.Push:FireAllClients("KillFeed", {
+                Killer = attacker.DisplayName,
+                Victim = victim and victim.DisplayName or model.Name,
+            })
         end
         local root = model:FindFirstChild("HumanoidRootPart")
         if root then
@@ -903,6 +970,7 @@ function WeaponService.Init(ctx)
     end)
     Players.PlayerRemoving:Connect(function(player)
         lastShotAt[player] = nil
+        lastKillAt[player] = nil
     end)
 end
 
@@ -1161,7 +1229,7 @@ function UIController:Build()
     })
     create("UIPadding", self.Content, { PaddingTop = UDim.new(0, 2), PaddingRight = UDim.new(0, 8), PaddingBottom = UDim.new(0, 8) })
 
-    local tabs = { "Overview", "Combat", "Movement", "Visuals", "Settings" }
+    local tabs = { "Overview", "Combat", "Movement", "Visuals", "Systems", "Settings" }
     for index, tabName in ipairs(tabs) do
         local button = create("TextButton", self.Sidebar, {
             Name = tabName .. "Tab", Size = UDim2.new(1, 0, 0, 38),
@@ -1261,6 +1329,13 @@ function UIController:ApplySettings()
         self.Context.Visuals:SetIdentity(self.Settings.IdentityEnabled == true)
     end
     if self.Crosshair then self.Crosshair.Visible = self.Settings.CrosshairEnabled end
+    if self.Context.Advanced then
+        self.Context.Advanced:SetCameraFilterEnabled(self.Settings.CameraFilterEnabled)
+        self.Context.Advanced:SetLogVisible(self.Settings.LogConsoleEnabled)
+        self.Context.Advanced:SetChatLoggingEnabled(self.Settings.ChatToLogEnabled)
+        self.Context.Advanced:SetRankOverlayEnabled(self.Settings.RankOverlayEnabled)
+        self.Context.Advanced:SetNPCTrackingEnabled(self.Settings.NPCTrackingEnabled)
+    end
     if self.Radar then
         self.Radar.Visible = self.Settings.RadarEnabled and self.Snapshot.RoleInspectionAllowed == true
     end
@@ -1346,7 +1421,7 @@ function UIController:RenderTab(tabName)
             self:MakeInfo("YOUR TEST ROLE: " .. string.upper(tostring(self.Snapshot.OwnRole)))
         end
         local stats = self.Snapshot.Stats or {}
-        self:MakeInfo(string.format("%s: %d     %s: %d     %s: %d", self:T("kills"), stats.Kills or 0, self:T("deaths"), stats.Deaths or 0, self:T("gold"), stats.Gold or 0))
+        self:MakeInfo(string.format("Speed kills: %d     %s: %d     %s: %d     %s: %d", stats.SpeedKills or 0, self:T("kills"), stats.Kills or 0, self:T("deaths"), stats.Deaths or 0, self:T("gold"), stats.Gold or 0))
         self:MakeSection("Quick actions")
         self:MakeButton("FIRE TRAINING PISTOL", function() self:FireTrainingShot() end)
         self:MakeButton(self:T("respawn"), function()
@@ -1408,6 +1483,25 @@ function UIController:RenderTab(tabName)
         end, true)
         self:MakeInfo("Player outlines use the normal occlusion mode. Hidden roles are sent only to UserIds authorized in Config.lua.")
 
+    elseif tabName == "Systems" then
+        self:MakeSection("Visual overlays & diagnostics")
+        self:MakeToggle("Black / purple camera vignette", "CameraFilterEnabled")
+        self:MakeToggle("Private diagnostic console", "LogConsoleEnabled")
+        self:MakeToggle("Read-only chat copy to private log", "ChatToLogEnabled")
+        self:MakeToggle("Rank labels (D / C / B / A)", "RankOverlayEnabled")
+        self:MakeToggle("Tagged NPC outlines", "NPCTrackingEnabled")
+        self:MakeButton("CLEAR PRIVATE LOG", function()
+            if self.Context.Advanced then self.Context.Advanced:ClearLogs() end
+        end)
+        self:MakeButton("BROADCAST TEST ANNOUNCEMENT", function()
+            self.Context.Remotes.Action:FireServer("RequestAnnouncement")
+            self:Notify("Announcement request sent for server validation.", "Info")
+        end)
+        self:MakeSection("Game integration notes")
+        self:MakeInfo("Rank overlays read the Rank attribute (D/C/B/A). NPC tracking uses CollectionService tag 'ElitesNPC'. Asset preload uses only IDs supplied in Shared/Config.lua.")
+        self:MakeInfo("Chat logging is read-only. Public chat is not hidden or redirected. The server validates developer announcements and emits trusted kill-feed events.")
+        self:MakeInfo("Exploit hooks, anti-cheat listener blocking, fake identity, remote CFrame spoofing, automatic player aim snapping and fake death are intentionally not included.")
+
     elseif tabName == "Settings" then
         self:MakeSection("Personal preferences")
         self:MakeButton(self:T("language") .. ": " .. (self.Settings.Language == "es" and self:T("spanish") or self:T("english")), function(button)
@@ -1465,7 +1559,7 @@ end
 
 function UIController:UpdateStats(stats)
     self.Snapshot.Stats = stats
-    self.Hud.Text = string.format("K %d  |  D %d  |  G %d", stats.Kills or 0, stats.Deaths or 0, stats.Gold or 0)
+    self.Hud.Text = string.format("SK %d  |  K %d  D %d  |  G %d", stats.SpeedKills or 0, stats.Kills or 0, stats.Deaths or 0, stats.Gold or 0)
     if self.ActiveTab == "Overview" then self:RenderTab("Overview") end
 end
 
@@ -1487,12 +1581,14 @@ function UIController:StartHudLoop()
             Kills = self.Player:GetAttribute("Kills") or (self.Snapshot.Stats and self.Snapshot.Stats.Kills) or 0,
             Deaths = self.Player:GetAttribute("Deaths") or (self.Snapshot.Stats and self.Snapshot.Stats.Deaths) or 0,
             Gold = self.Player:GetAttribute("Gold") or (self.Snapshot.Stats and self.Snapshot.Stats.Gold) or 0,
+            SpeedKills = self.Player:GetAttribute("SpeedKills") or (self.Snapshot.Stats and self.Snapshot.Stats.SpeedKills) or 0,
         }
-        self.Hud.Text = string.format("K %d  |  D %d  |  G %d", stats.Kills, stats.Deaths, stats.Gold)
+        self.Hud.Text = string.format("SK %d  |  K %d  D %d  |  G %d", stats.SpeedKills, stats.Kills, stats.Deaths, stats.Gold)
     end
     self:Connect(self.Player:GetAttributeChangedSignal("Kills"), update)
     self:Connect(self.Player:GetAttributeChangedSignal("Deaths"), update)
     self:Connect(self.Player:GetAttributeChangedSignal("Gold"), update)
+    self:Connect(self.Player:GetAttributeChangedSignal("SpeedKills"), update)
     update()
 end
 
@@ -1679,6 +1775,39 @@ end
 return VisualController
 
 ]====] }, -- StarterPlayer/StarterPlayerScripts/ElitesSystems/Controllers/VisualController.lua
+    { Service = "ServerScriptService", Folders = {"ElitesSystems", "Services"}, Name = "AnnouncementService", ClassName = "ModuleScript", Source = [====[
+local Players = game:GetService("Players")
+
+local AnnouncementService = {}
+local context
+local lastRequest = {}
+
+local function isAdmin(player)
+    return table.find(context.Config.AdminUserIds, player.UserId) ~= nil
+end
+
+function AnnouncementService.Init(ctx)
+    context = ctx
+    context.Remotes.Action.OnServerEvent:Connect(function(player, action)
+        if action ~= "RequestAnnouncement" then return end
+        if not isAdmin(player) then
+            context.Notify(player, "You are not authorized to broadcast announcements.", "Warning")
+            return
+        end
+        local now = os.clock()
+        if now - (lastRequest[player] or 0) < 10 then return end
+        lastRequest[player] = now
+        context.Remotes.Push:FireAllClients("Announcement", {
+            Message = "A developer test announcement was broadcast.",
+            From = player.DisplayName,
+        })
+    end)
+    Players.PlayerRemoving:Connect(function(player) lastRequest[player] = nil end)
+end
+
+return AnnouncementService
+
+]====] }, -- ServerScriptService/ElitesSystems/Services/AnnouncementService.lua
     { Service = "ServerScriptService", Folders = {"ElitesSystems"}, Name = "Bootstrap", ClassName = "Script", Source = [====[
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -1694,6 +1823,7 @@ local RoleService = require(servicesFolder:WaitForChild("RoleService"))
 local WeaponService = require(servicesFolder:WaitForChild("WeaponService"))
 local MovementService = require(servicesFolder:WaitForChild("MovementService"))
 local PickupService = require(servicesFolder:WaitForChild("PickupService"))
+local AnnouncementService = require(servicesFolder:WaitForChild("AnnouncementService"))
 
 local remotesFolder = ReplicatedStorage:FindFirstChild(Config.RemoteFolderName)
 if not remotesFolder then
@@ -1744,6 +1874,7 @@ context.RoleService = RoleService
 WeaponService.Init(context)
 MovementService.Init(context)
 PickupService.Init(context)
+AnnouncementService.Init(context)
 
 Remotes.RequestSnapshot.OnServerInvoke = function(player)
     local dataSnapshot = DataService.GetSnapshot(player)
@@ -1784,6 +1915,371 @@ end)
 print("[ElitesSystems] Server started. Version " .. Config.Version)
 
 ]====] }, -- ServerScriptService/ElitesSystems/Bootstrap.server.lua
+    { Service = "StarterPlayer", Folders = {"ElitesSystems", "Controllers"}, Name = "AdvancedController", ClassName = "ModuleScript", Source = [====[
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local CollectionService = game:GetService("CollectionService")
+local LogService = game:GetService("LogService")
+local TextChatService = game:GetService("TextChatService")
+local ContentProvider = game:GetService("ContentProvider")
+
+local AdvancedController = {}
+AdvancedController.__index = AdvancedController
+
+local function create(className, parent, properties)
+    local object = Instance.new(className)
+    for key, value in pairs(properties or {}) do object[key] = value end
+    object.Parent = parent
+    return object
+end
+
+local RANKS = { D = true, C = true, B = true, A = true }
+
+function AdvancedController.new(context)
+    local self = setmetatable({}, AdvancedController)
+    self.Context = context
+    self.Config = context.Config
+    self.Player = Players.LocalPlayer
+    self.LogEntries = {}
+    self.MaxLogEntries = 70
+    self.RankBillboards = {}
+    self.NPCHighlights = {}
+    self.Connections = {}
+    self.ChatConnection = nil
+    self.LastPlayerCount = #Players:GetPlayers()
+    self.FrameCount = 0
+    self.FrameElapsed = 0
+    self.FPS = 0
+    self:_buildGui()
+    self:_bindDiagnostics()
+    self:_bindPlayers()
+    self:_bindNPCs()
+    self:_preloadAssets()
+    self:SetLogVisible(context.Snapshot.Settings and context.Snapshot.Settings.LogConsoleEnabled == true)
+    self:SetCameraFilterEnabled(context.Snapshot.Settings and context.Snapshot.Settings.CameraFilterEnabled == true)
+    self:SetRankOverlayEnabled(context.Snapshot.Settings and context.Snapshot.Settings.RankOverlayEnabled ~= false)
+    self:SetNPCTrackingEnabled(context.Snapshot.Settings and context.Snapshot.Settings.NPCTrackingEnabled == true)
+    self:SetChatLoggingEnabled(context.Snapshot.Settings and context.Snapshot.Settings.ChatToLogEnabled == true)
+    self:Log("Advanced systems initialized.", "Success")
+    return self
+end
+
+function AdvancedController:_track(connection)
+    table.insert(self.Connections, connection)
+    return connection
+end
+
+function AdvancedController:_buildGui()
+    local playerGui = self.Player:WaitForChild("PlayerGui")
+    local old = playerGui:FindFirstChild("ElitesSystemsAdvancedUI")
+    if old then old:Destroy() end
+    self.Gui = create("ScreenGui", playerGui, {
+        Name = "ElitesSystemsAdvancedUI",
+        ResetOnSpawn = false,
+        IgnoreGuiInset = true,
+        DisplayOrder = 79,
+    })
+
+    self.Vignette = create("Frame", self.Gui, {
+        Name = "PurpleVignette", Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1, Visible = false,
+    })
+    local function edge(name, size, position, rotation)
+        local frame = create("Frame", self.Vignette, {
+            Name = name, Size = size, Position = position,
+            BackgroundColor3 = self.Config.Theme.PurpleDark,
+            BorderSizePixel = 0,
+        })
+        create("UIGradient", frame, {
+            Rotation = rotation,
+            Color = ColorSequence.new(self.Config.Theme.PurpleDark, self.Config.Theme.Background),
+            Transparency = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 0.12),
+                NumberSequenceKeypoint.new(1, 1),
+            }),
+        })
+    end
+    edge("Top", UDim2.new(1, 0, 0, 110), UDim2.new(0, 0, 0, 0), 90)
+    edge("Bottom", UDim2.new(1, 0, 0, 110), UDim2.new(0, 0, 1, -110), 270)
+    edge("Left", UDim2.new(0, 110, 1, 0), UDim2.new(0, 0, 0, 0), 0)
+    edge("Right", UDim2.new(0, 110, 1, 0), UDim2.new(1, -110, 0, 0), 180)
+
+    self.Console = create("Frame", self.Gui, {
+        Name = "PrivateLogConsole", Size = UDim2.fromOffset(390, 174),
+        Position = UDim2.new(0, 16, 1, -190), BackgroundColor3 = self.Config.Theme.Panel,
+        BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false,
+    })
+    create("UICorner", self.Console, { CornerRadius = UDim.new(0, 10) })
+    create("UIStroke", self.Console, { Color = self.Config.Theme.Purple, Thickness = 1.2 })
+    create("TextLabel", self.Console, {
+        Name = "Title", Size = UDim2.new(1, -82, 0, 28), Position = UDim2.fromOffset(10, 3),
+        BackgroundTransparency = 1, Text = "ELITES SYSTEMS  •  PRIVATE LOG",
+        TextColor3 = self.Config.Theme.Text, Font = Enum.Font.GothamBold,
+        TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
+    })
+    local clear = create("TextButton", self.Console, {
+        Name = "Clear", Size = UDim2.fromOffset(54, 23), Position = UDim2.new(1, -64, 0, 5),
+        BackgroundColor3 = self.Config.Theme.PanelRaised, Text = "CLEAR",
+        TextColor3 = self.Config.Theme.Text, Font = Enum.Font.GothamBold, TextSize = 9,
+    })
+    create("UICorner", clear, { CornerRadius = UDim.new(0, 6) })
+    clear.Activated:Connect(function() self:ClearLogs() end)
+    self.LogList = create("ScrollingFrame", self.Console, {
+        Name = "Entries", Position = UDim2.fromOffset(8, 32), Size = UDim2.new(1, -16, 1, -40),
+        BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3,
+        ScrollBarImageColor3 = self.Config.Theme.Purple, AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        CanvasSize = UDim2.new(),
+    })
+    create("UIListLayout", self.LogList, { Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder })
+    create("UIPadding", self.LogList, { PaddingBottom = UDim.new(0, 4) })
+end
+
+function AdvancedController:Log(message, kind)
+    local text = tostring(message):gsub("[\r\n]+", " ")
+    local record = { Text = text, Kind = kind or "Info", Time = os.date("%H:%M:%S") }
+    table.insert(self.LogEntries, record)
+    while #self.LogEntries > self.MaxLogEntries do table.remove(self.LogEntries, 1) end
+    if not self.LogList or not self.LogList.Parent then return end
+
+    local color = self.Config.Theme.Muted
+    if record.Kind == "Error" then color = self.Config.Theme.Red
+    elseif record.Kind == "Warning" then color = self.Config.Theme.Gold
+    elseif record.Kind == "Success" then color = self.Config.Theme.Green
+    elseif record.Kind == "Announcement" then color = self.Config.Theme.Purple end
+
+    local line = create("TextLabel", self.LogList, {
+        Size = UDim2.new(1, -6, 0, 18), BackgroundTransparency = 1,
+        Text = "[" .. record.Time .. "] " .. text, TextColor3 = color,
+        Font = Enum.Font.Code, TextSize = 10, TextWrapped = true,
+        TextXAlignment = Enum.TextXAlignment.Left, AutomaticSize = Enum.AutomaticSize.Y,
+    })
+    while #self.LogList:GetChildren() > self.MaxLogEntries + 2 do
+        local first = self.LogList:FindFirstChildWhichIsA("TextLabel")
+        if not first then break end
+        first:Destroy()
+    end
+    task.defer(function()
+        if self.LogList and self.LogList.Parent then
+            self.LogList.CanvasPosition = Vector2.new(0, math.max(0, self.LogList.AbsoluteCanvasSize.Y))
+        end
+    end)
+end
+
+function AdvancedController:ClearLogs()
+    table.clear(self.LogEntries)
+    if self.LogList then
+        for _, child in ipairs(self.LogList:GetChildren()) do
+            if child:IsA("TextLabel") then child:Destroy() end
+        end
+    end
+    self:Log("Private console cleared.", "Success")
+end
+
+function AdvancedController:SetLogVisible(enabled)
+    if self.Console then self.Console.Visible = enabled == true end
+end
+
+function AdvancedController:SetCameraFilterEnabled(enabled)
+    if self.Vignette then self.Vignette.Visible = enabled == true end
+end
+
+function AdvancedController:SetChatLoggingEnabled(enabled)
+    if enabled and not self.ChatConnection then
+        self.ChatConnection = TextChatService.MessageReceived:Connect(function(message)
+            if message.Status ~= Enum.TextChatMessageStatus.Success then return end
+            local source = message.TextSource
+            local speaker = source and (Players:GetPlayerByUserId(source.UserId))
+            local name = speaker and speaker.DisplayName or "System"
+            self:Log("[CHAT] " .. name .. ": " .. tostring(message.Text), "Info")
+        end)
+    elseif not enabled and self.ChatConnection then
+        self.ChatConnection:Disconnect()
+        self.ChatConnection = nil
+    end
+end
+
+function AdvancedController:_bindDiagnostics()
+    self:_track(LogService.MessageOut:Connect(function(message, messageType)
+        if messageType == Enum.MessageType.MessageError then
+            self:Log("[ERROR] " .. message, "Error")
+        elseif messageType == Enum.MessageType.MessageWarning then
+            self:Log("[WARNING] " .. message, "Warning")
+        end
+    end))
+    local lastSample = 0
+    self:_track(RunService.Heartbeat:Connect(function(dt)
+        self.FrameCount += 1
+        self.FrameElapsed += dt
+        if self.FrameElapsed >= 1 then
+            self.FPS = math.floor(self.FrameCount / self.FrameElapsed + 0.5)
+            self.FrameCount = 0
+            self.FrameElapsed = 0
+            if os.clock() - lastSample >= 15 then
+                lastSample = os.clock()
+                -- Keep this quiet; the value is available to other UI elements if needed.
+            end
+        end
+    end))
+    local function observeLocalCharacter(character)
+        local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 8)
+        if not humanoid then return end
+        self:_track(humanoid.StateChanged:Connect(function(oldState, newState)
+            if newState == Enum.HumanoidStateType.Freefall or newState == Enum.HumanoidStateType.Landed
+                or newState == Enum.HumanoidStateType.FallingDown then
+                self.LastHumanoidState = newState.Name
+            end
+        end))
+    end
+    if self.Player.Character then task.spawn(observeLocalCharacter, self.Player.Character) end
+    self:_track(self.Player.CharacterAdded:Connect(observeLocalCharacter))
+    self:_track(Players.PlayerAdded:Connect(function(player)
+        self:Log(player.DisplayName .. " joined the server.", "Info")
+    end))
+    self:_track(Players.PlayerRemoving:Connect(function(player)
+        self:Log(player.DisplayName .. " left the server.", "Info")
+    end))
+end
+
+function AdvancedController:_rankFor(player)
+    local rank = player:GetAttribute("Rank")
+    if type(rank) ~= "string" then return nil end
+    rank = string.upper(rank)
+    return RANKS[rank] and rank or nil
+end
+
+function AdvancedController:_refreshRank(player)
+    local old = self.RankBillboards[player]
+    if old then old:Destroy(); self.RankBillboards[player] = nil end
+    if not self.RankOverlayEnabled then return end
+    local character = player.Character
+    local head = character and (character:FindFirstChild("Head") or character:WaitForChild("Head", 5))
+    local rank = self:_rankFor(player)
+    if not head or not rank then return end
+    local board = create("BillboardGui", character, {
+        Name = "ElitesRankOverlay", Adornee = head,
+        Size = UDim2.fromOffset(130, 25), StudsOffset = Vector3.new(0, 2.8, 0),
+        AlwaysOnTop = false,
+    })
+    local label = create("TextLabel", board, {
+        Size = UDim2.fromScale(1, 1), BackgroundColor3 = self.Config.Theme.Panel,
+        BackgroundTransparency = 0.12, Text = rank .. "  •  " .. tostring(player:GetAttribute("DisplayAlias") or player.DisplayName),
+        TextColor3 = self.Config.Theme.Text, Font = Enum.Font.GothamBold, TextSize = 12,
+    })
+    create("UICorner", label, { CornerRadius = UDim.new(0, 6) })
+    create("UIStroke", label, { Color = self.Config.Theme.Purple, Thickness = 1 })
+    self.RankBillboards[player] = board
+end
+
+function AdvancedController:SetRankOverlayEnabled(enabled)
+    self.RankOverlayEnabled = enabled == true
+    for _, player in ipairs(Players:GetPlayers()) do self:_refreshRank(player) end
+end
+
+function AdvancedController:_bindPlayers()
+    local function bind(player)
+        local function bindCharacter(character)
+            task.defer(function()
+                if character.Parent then self:_refreshRank(player) end
+            end)
+        end
+        self:_track(player.CharacterAdded:Connect(bindCharacter))
+        self:_track(player:GetAttributeChangedSignal("Rank"):Connect(function() self:_refreshRank(player) end))
+        self:_track(player:GetAttributeChangedSignal("DisplayAlias"):Connect(function() self:_refreshRank(player) end))
+        if player.Character then bindCharacter(player.Character) end
+    end
+    for _, player in ipairs(Players:GetPlayers()) do bind(player) end
+    self:_track(Players.PlayerAdded:Connect(bind))
+    self:_track(Players.PlayerRemoving:Connect(function(player)
+        local board = self.RankBillboards[player]
+        if board then board:Destroy() end
+        self.RankBillboards[player] = nil
+    end))
+end
+
+function AdvancedController:_npcModel(instance)
+    if instance:IsA("Model") then return instance end
+    return instance:FindFirstAncestorOfClass("Model")
+end
+
+function AdvancedController:_refreshNPC(instance)
+    local model = self:_npcModel(instance)
+    if not model or self.NPCHighlights[model] or not self.NPCTrackingEnabled then return end
+    local highlight = create("Highlight", model, {
+        Name = "ElitesEntityTracker", Adornee = model,
+        DepthMode = Enum.HighlightDepthMode.Occluded,
+        FillColor = self.Config.Theme.Purple, OutlineColor = self.Config.Theme.Purple,
+        FillTransparency = 0.9, OutlineTransparency = 0.1,
+    })
+    self.NPCHighlights[model] = highlight
+end
+
+function AdvancedController:SetNPCTrackingEnabled(enabled)
+    self.NPCTrackingEnabled = enabled == true
+    if self.NPCTrackingEnabled then
+        for _, instance in ipairs(CollectionService:GetTagged(self.Config.NPCTag)) do self:_refreshNPC(instance) end
+    else
+        for model, highlight in pairs(self.NPCHighlights) do
+            if highlight then highlight:Destroy() end
+            self.NPCHighlights[model] = nil
+        end
+    end
+end
+
+function AdvancedController:_bindNPCs()
+    self:_track(CollectionService:GetInstanceAddedSignal(self.Config.NPCTag):Connect(function(instance)
+        self:_refreshNPC(instance)
+    end))
+    self:_track(CollectionService:GetInstanceRemovedSignal(self.Config.NPCTag):Connect(function(instance)
+        local model = self:_npcModel(instance)
+        local highlight = model and self.NPCHighlights[model]
+        if highlight then highlight:Destroy(); self.NPCHighlights[model] = nil end
+    end))
+end
+
+function AdvancedController:_preloadAssets()
+    local root = game:GetService("ReplicatedStorage"):WaitForChild("ElitesSystems")
+    local folder = root:FindFirstChild(self.Config.AssetFolderName or "Assets")
+    if not folder then return end
+    local supported = {
+        Sound = true, Decal = true, Texture = true, ImageLabel = true, ImageButton = true,
+        MeshPart = true, SpecialMesh = true, ParticleEmitter = true, Beam = true, Trail = true,
+        Animation = true,
+    }
+    local assets = {}
+    for _, instance in ipairs(folder:GetDescendants()) do
+        if supported[instance.ClassName] then table.insert(assets, instance) end
+    end
+    if #assets == 0 then return end
+    task.spawn(function()
+        local ok, err = pcall(function() ContentProvider:PreloadAsync(assets) end)
+        if ok then self:Log("Approved asset preload completed (" .. tostring(#assets) .. " instances).", "Success")
+        else self:Log("Asset preload failed: " .. tostring(err), "Warning") end
+    end)
+end
+
+function AdvancedController:HandleEvent(eventName, payload)
+    payload = type(payload) == "table" and payload or {}
+    if eventName == "Announcement" then
+        self:Log("[ANNOUNCEMENT] " .. tostring(payload.Message or "Game announcement"), "Announcement")
+    elseif eventName == "KillFeed" then
+        self:Log(tostring(payload.Killer or "Unknown") .. " eliminated " .. tostring(payload.Victim or "Unknown"), "Success")
+    end
+end
+
+function AdvancedController:Destroy()
+    if self.ChatConnection then self.ChatConnection:Disconnect(); self.ChatConnection = nil end
+    for _, connection in ipairs(self.Connections) do
+        if connection and connection.Connected then connection:Disconnect() end
+    end
+    table.clear(self.Connections)
+    for player, board in pairs(self.RankBillboards) do if board then board:Destroy() end end
+    for model, highlight in pairs(self.NPCHighlights) do if highlight then highlight:Destroy() end end
+    if self.Gui then self.Gui:Destroy() end
+end
+
+return AdvancedController
+
+]====] }, -- StarterPlayer/StarterPlayerScripts/ElitesSystems/Controllers/AdvancedController.lua
     { Service = "StarterPlayer", Folders = {"ElitesSystems"}, Name = "Bootstrap", ClassName = "LocalScript", Source = [====[
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -1836,7 +2332,9 @@ local CameraController = safeRequire("CameraController")
 local MovementController = safeRequire("MovementController")
 local VisualController = safeRequire("VisualController")
 local UIController = safeRequire("UIController")
+local AdvancedController = safeRequire("AdvancedController")
 
+local advanced = AdvancedController.new({ Config = Config, Snapshot = snapshot, Remotes = Remotes })
 local camera = CameraController.new()
 local movement = MovementController.new(Config)
 local visuals = VisualController.new(player)
@@ -1854,6 +2352,7 @@ local context = {
     Camera = camera,
     Movement = movement,
     Visuals = visuals,
+    Advanced = advanced,
 }
 local ui = UIController.new(context)
 
@@ -1869,6 +2368,8 @@ Remotes.Push.OnClientEvent:Connect(function(eventName, payload)
         ui:SetRoleSnapshot(payload)
     elseif eventName == "OwnRole" then
         ui:SetOwnRole(payload.Role)
+    elseif eventName == "Announcement" or eventName == "KillFeed" then
+        advanced:HandleEvent(eventName, payload)
     end
 end)
 
@@ -1889,6 +2390,6 @@ for _, entry in ipairs(FILES) do
     end
 end
 
-print(string.format("[Elites Systems] Installation complete: %d scripts created.", installedCount))
+print(string.format("[Elites Systems v0.2.0] Installation complete: %d scripts created.", installedCount))
 print("[Elites Systems] Check Output for startup messages. Press RightShift in-game to toggle the UI.")
 print("[Elites Systems] Before testing developer-only role inspection, set your UserId in Config.AdminUserIds.")
